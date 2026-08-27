@@ -204,7 +204,7 @@ const stopSchema = z.object({
 const scheduleSchema = z.object({
   actionId: z.string().min(1),
   token: z.string().min(1),
-  delayMinutes: z.number().int().min(1).max(120).default(15),
+  delayMinutes: z.number().int().min(1).max(720).default(15),
 });
 
 async function handler(req: IncomingMessage, res: ServerResponse) {

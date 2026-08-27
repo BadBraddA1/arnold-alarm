@@ -663,49 +663,140 @@ async function stopAndAllClear(msgEl) {
 
 async function scheduleAction(actionId, label, delayMinutes, msgEl, listEl) {
   await playAction(actionId, msgEl, delayMinutes);
-  if (!state.session?.scopes?.includes("remote")) {
-    await refreshSchedule(listEl);
+  await refreshSchedule(listEl);
+}
+
+function scheduleBellLabel(actionId) {
+  if (actionId === "bells.first") return "First bell";
+  if (actionId === "bells.second") return "Second bell";
+  return actionId || "Bell";
+}
+
+function formatCentralFireTime(ms) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ,
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(new Date(ms));
+}
+
+function formatCountdown(msFromNow) {
+  const secs = Math.max(0, Math.round(msFromNow / 1000));
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  if (m >= 60) {
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    return `in ${h}h ${rm}m`;
   }
+  return `in ${m}:${String(s).padStart(2, "0")}`;
 }
 
 async function refreshSchedule(listEl) {
   if (!listEl || !state.config) return;
+  const now = Date.now();
+  /** @type {{ id: string, actionId: string, fireAtMs: number, source: "lan" | "cloud" }[]} */
+  const items = [];
+
   try {
     const res = await fetch(`${state.config.gatewayUrl}/schedule`, { cache: "no-store" });
-    if (!res.ok) return;
-    const data = await res.json();
-    const now = Date.now();
-    const pending = (data.jobs || []).filter((j) => j.fireAt > now);
-    if (!pending.length) {
-      listEl.innerHTML = "";
-      return;
+    if (res.ok) {
+      const data = await res.json();
+      for (const j of data.jobs || []) {
+        if (typeof j.fireAt === "number" && j.fireAt > now) {
+          items.push({
+            id: j.id,
+            actionId: j.actionId,
+            fireAtMs: j.fireAt,
+            source: "lan",
+          });
+        }
+      }
     }
-    listEl.innerHTML = `
-      <div class="card stack" style="padding:0.9rem 1rem">
-        <p class="muted" style="margin:0;font-size:0.8rem">Scheduled on gateway</p>
-        ${pending
-          .map((j) => {
-            const secs = Math.max(0, Math.round((j.fireAt - now) / 1000));
-            const m = Math.floor(secs / 60);
-            const s = secs % 60;
-            return `<div style="display:flex;justify-content:space-between;gap:0.75rem;align-items:center">
-              <span style="font-variant-numeric:tabular-nums">${escapeHtml(j.actionId)} · ${m}:${String(s).padStart(2, "0")}</span>
-              <button type="button" class="btn btn-ghost" style="min-height:2.25rem;padding:0.35rem 0.7rem" data-cancel="${escapeHtml(j.id)}">Cancel</button>
-            </div>`;
-          })
-          .join("")}
-      </div>`;
-    listEl.querySelectorAll("[data-cancel]").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        await fetch(`${state.config.gatewayUrl}/schedule/${btn.dataset.cancel}`, {
-          method: "DELETE",
-        });
-        await refreshSchedule(listEl);
-      });
-    });
   } catch {
-    /* offline */
+    /* campus gateway offline */
   }
+
+  try {
+    const { res, data } = await api("/api/schedule");
+    if (res.ok) {
+      for (const j of data.jobs || []) {
+        const ms = j.fireAt ? Date.parse(j.fireAt) : NaN;
+        if (Number.isFinite(ms) && ms > now) {
+          items.push({
+            id: j.id,
+            actionId: j.actionId,
+            fireAtMs: ms,
+            source: "cloud",
+          });
+        }
+      }
+    }
+  } catch {
+    /* not signed in / offline */
+  }
+
+  items.sort((a, b) => a.fireAtMs - b.fireAtMs);
+
+  if (!items.length) {
+    listEl.innerHTML = "";
+    return;
+  }
+
+  listEl.innerHTML = `
+    <div class="card stack" style="padding:0.9rem 1rem;gap:0.65rem">
+      <p class="muted" style="margin:0;font-size:0.8rem">Scheduled rings (building time)</p>
+      ${items
+        .map((j) => {
+          const label = scheduleBellLabel(j.actionId);
+          const when = formatCentralFireTime(j.fireAtMs);
+          const left = formatCountdown(j.fireAtMs - now);
+          return `<div style="display:flex;justify-content:space-between;gap:0.75rem;align-items:center">
+            <div style="min-width:0">
+              <div style="font-weight:600">${escapeHtml(label)} · ${escapeHtml(when)}</div>
+              <div class="muted" style="font-size:0.8rem;font-variant-numeric:tabular-nums">${escapeHtml(left)}</div>
+            </div>
+            <button type="button" class="btn btn-ghost" style="min-height:2.25rem;padding:0.35rem 0.7rem;flex-shrink:0" data-void-id="${escapeHtml(j.id)}" data-void-source="${escapeHtml(j.source)}">Void</button>
+          </div>`;
+        })
+        .join("")}
+    </div>`;
+
+  listEl.querySelectorAll("[data-void-id]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.voidId;
+      const source = btn.dataset.voidSource;
+      btn.disabled = true;
+      try {
+        if (source === "cloud") {
+          const { res, data } = await api(`/api/schedule/${encodeURIComponent(id)}`, {
+            method: "DELETE",
+          });
+          if (!res.ok) {
+            btn.disabled = false;
+            alert(data.error || "Could not void schedule.");
+            return;
+          }
+        } else {
+          const res = await fetch(`${state.config.gatewayUrl}/schedule/${encodeURIComponent(id)}`, {
+            method: "DELETE",
+          });
+          if (!res.ok) {
+            btn.disabled = false;
+            alert("Could not void schedule.");
+            return;
+          }
+        }
+      } catch {
+        btn.disabled = false;
+        alert("Could not void schedule.");
+        return;
+      }
+      await refreshSchedule(listEl);
+    });
+  });
 }
 
 function chicagoParts(date = new Date()) {
@@ -802,7 +893,7 @@ function renderBells() {
         </div>
         <div class="card stack" style="gap:0.75rem">
           <p style="margin:0;font-weight:600">Schedule at building time</p>
-          <p class="muted" style="margin:0;font-size:0.85rem">Pick first or second bell and a Central time. Survives closing this page.</p>
+          <p class="muted" style="margin:0;font-size:0.85rem">Pick first or second bell and a Central time. Pending rings show below — void anytime before they fire.</p>
           <div class="field">
             <label>Bell</label>
             <select id="bell-which" style="width:100%;min-height:2.75rem;padding:0.5rem 0.75rem;border-radius:var(--radius);border:1px solid var(--line);background:var(--bg);color:inherit;font:inherit">

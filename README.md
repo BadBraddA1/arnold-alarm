@@ -98,8 +98,8 @@ Emergency + bell clips use Protect **ringtones** (`PLAY_SPEAKER` on all speaker 
 ## Class bells UI
 
 - Big **building clock** (America/Chicago).
-- **First bell** / **Second bell** — play now, or **schedule at building time** (hour:minute AM/PM Central).
-- Schedule survives closing the page (timer on the Pi). See [`docs/BELLS-BUILDING-TIME.md`](docs/BELLS-BUILDING-TIME.md).
+- **First bell** / **Second bell** — play now, or **schedule at building time** (hour:minute AM/PM Central). Pending rings show the Central fire time with **Void** to cancel.
+- Schedule survives closing the page (timer on the Pi for LAN; cloud queue for remote). See [`docs/BELLS-BUILDING-TIME.md`](docs/BELLS-BUILDING-TIME.md).
 
 ## Emergency codes UI
 

@@ -141,6 +141,7 @@ export type QueueJob = {
   created_at: string;
   loop_play?: number;
   command?: string;
+  fire_at?: string | null;
 };
 
 export async function enqueuePlay(
@@ -153,44 +154,87 @@ export async function enqueuePlay(
     delayMinutes: number;
     loop?: boolean;
     command?: "play" | "stop" | "all_clear";
+    fireAt?: string | null;
   },
 ) {
+  const delay = Math.max(0, input.delayMinutes);
+  const fireAt =
+    input.fireAt ??
+    (delay > 0 ? new Date(Date.now() + delay * 60_000).toISOString() : null);
+  const status = delay > 0 && input.command !== "stop" && input.command !== "all_clear"
+    ? "scheduled"
+    : "pending";
+
   await env.DB.prepare(
-    `INSERT INTO play_queue (id, action_id, pin_id, label, delay_minutes, status, loop_play, command)
-     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+    `INSERT INTO play_queue (id, action_id, pin_id, label, delay_minutes, status, loop_play, command, fire_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       input.id,
       input.actionId,
       input.pinId,
       input.label,
-      input.delayMinutes,
+      delay,
+      status,
       input.loop ? 1 : 0,
       input.command ?? "play",
+      fireAt,
     )
     .run();
 }
 
+/** Due plays: immediate pending, or scheduled whose fire_at is due. */
 export async function claimPendingJobs(env: Env, limit = 5): Promise<QueueJob[]> {
+  const nowIso = new Date().toISOString();
   const { results } = await env.DB.prepare(
-    `SELECT id, action_id, pin_id, label, delay_minutes, status, created_at, loop_play, command
+    `SELECT id, action_id, pin_id, label, delay_minutes, status, created_at, loop_play, command, fire_at
      FROM play_queue
      WHERE status = 'pending'
-     ORDER BY created_at ASC
+        OR (status = 'scheduled' AND fire_at IS NOT NULL AND fire_at <= ?)
+     ORDER BY COALESCE(fire_at, created_at) ASC
      LIMIT ?`,
   )
-    .bind(limit)
+    .bind(nowIso, limit)
     .all<QueueJob>();
 
   const jobs = results ?? [];
   for (const job of jobs) {
     await env.DB.prepare(
-      `UPDATE play_queue SET status = 'claimed', claimed_at = datetime('now') WHERE id = ? AND status = 'pending'`,
+      `UPDATE play_queue SET status = 'claimed', claimed_at = datetime('now') WHERE id = ? AND status IN ('pending', 'scheduled')`,
     )
       .bind(job.id)
       .run();
   }
   return jobs;
+}
+
+export async function listScheduledPlays(env: Env): Promise<QueueJob[]> {
+  const nowIso = new Date().toISOString();
+  const { results } = await env.DB.prepare(
+    `SELECT id, action_id, pin_id, label, delay_minutes, status, created_at, loop_play, command, fire_at
+     FROM play_queue
+     WHERE status = 'scheduled'
+       AND (fire_at IS NULL OR fire_at > ?)
+     ORDER BY COALESCE(fire_at, created_at) ASC
+     LIMIT 40`,
+  )
+    .bind(nowIso)
+    .all<QueueJob>();
+  return results ?? [];
+}
+
+export async function cancelScheduledPlay(
+  env: Env,
+  id: string,
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE play_queue
+     SET status = 'cancelled', finished_at = datetime('now')
+     WHERE id = ? AND status = 'scheduled'`,
+  )
+    .bind(id)
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
 }
 
 export async function finishJob(

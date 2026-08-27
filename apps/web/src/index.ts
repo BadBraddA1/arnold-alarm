@@ -3,6 +3,7 @@ import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import bcrypt from "bcryptjs";
 import { signPlayToken, signSession, verifySession } from "./auth";
 import {
+  cancelScheduledPlay,
   checkRateLimit,
   claimPendingJobs,
   clearRateLimit,
@@ -13,6 +14,7 @@ import {
   listActivePins,
   listAllPins,
   listAudit,
+  listScheduledPlays,
   getPinById,
   setPinActive,
   setPinHash,
@@ -318,7 +320,7 @@ app.post("/api/play-remote", async (c) => {
   if (!actionAllowed(actionId, session.scopes)) {
     return c.json({ error: "Not allowed for this PIN." }, 403);
   }
-  const delayMinutes = Math.max(0, Math.min(120, Number(body.delayMinutes) || 0));
+  const delayMinutes = Math.max(0, Math.min(720, Number(body.delayMinutes) || 0));
   const loop = Boolean(body.loop);
 
   if (!(await getSystemArmed(c.env))) {
@@ -339,6 +341,10 @@ app.post("/api/play-remote", async (c) => {
   }
 
   const id = crypto.randomUUID();
+  const fireAt =
+    delayMinutes > 0
+      ? new Date(Date.now() + delayMinutes * 60_000).toISOString()
+      : null;
   await enqueuePlay(c.env, {
     id,
     actionId,
@@ -346,6 +352,7 @@ app.post("/api/play-remote", async (c) => {
     label: session.label,
     delayMinutes,
     loop,
+    fireAt,
   });
   await insertAudit(c.env, {
     id,
@@ -356,6 +363,7 @@ app.post("/api/play-remote", async (c) => {
     status: delayMinutes > 0 ? "scheduled" : "queued",
     detail: [
       delayMinutes > 0 ? `delay ${delayMinutes}m` : null,
+      fireAt ? `fire ${fireAt}` : null,
       loop ? "loop" : null,
     ]
       .filter(Boolean)
@@ -367,11 +375,52 @@ app.post("/api/play-remote", async (c) => {
     mode: "remote",
     armed: true,
     status: delayMinutes > 0 ? "scheduled" : "queued",
+    fireAt,
     message:
       delayMinutes > 0
-        ? `Queued on campus — not playing yet. Gateway will ring in about ${delayMinutes} min.`
+        ? `Scheduled on campus — not playing yet. Will ring in about ${delayMinutes} min (void anytime before then).`
         : "Queued on campus — not playing yet. Gateway usually picks this up within a few seconds.",
   });
+});
+
+app.get("/api/schedule", async (c) => {
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  const jobs = await listScheduledPlays(c.env);
+  return c.json({
+    jobs: jobs.map((j) => ({
+      id: j.id,
+      actionId: j.action_id,
+      label: j.label,
+      fireAt: j.fire_at,
+      delayMinutes: j.delay_minutes,
+      source: "cloud" as const,
+    })),
+  });
+});
+
+app.delete("/api/schedule/:id", async (c) => {
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
+  const id = c.req.param("id")?.trim();
+  if (!id) return c.json({ error: "id required" }, 400);
+  const ok = await cancelScheduledPlay(c.env, id);
+  if (!ok) {
+    return c.json({ error: "Not found or already fired." }, 404);
+  }
+  await insertAudit(c.env, {
+    id: crypto.randomUUID(),
+    actionId: "__void_schedule__",
+    label: session.label,
+    pinId: session.pinId,
+    mode: "remote",
+    status: "voided",
+    detail: `void ${id}`,
+  });
+  return c.json({ ok: true });
 });
 
 app.post("/api/stop-remote", async (c) => {
@@ -565,7 +614,8 @@ app.get("/api/gateway/poll", async (c) => {
     jobs: jobs.map((j) => ({
       id: j.id,
       actionId: j.action_id,
-      delayMinutes: j.delay_minutes,
+      // Scheduled jobs are only claimed when due — play immediately on the Pi.
+      delayMinutes: j.status === "scheduled" ? 0 : j.delay_minutes,
       label: j.label,
       createdAt: j.created_at,
       loop: Boolean(j.loop_play),
