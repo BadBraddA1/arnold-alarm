@@ -479,7 +479,8 @@ function renderEvacuate() {
         <div>
           <h1 class="page-title">Emergency codes</h1>
           <p class="muted" style="margin:0">
-            ${playHint()} Confirm before sending Red or Blue. Use <strong>Stop speakers</strong> to cut audio mid-play.
+            ${playHint()} Confirm before sending Red or Blue. Plays on all campus speakers.
+            Stop ends queued playback; a clip already sounding may finish on its own.
           </p>
         </div>
         <label class="checks" style="margin:0">

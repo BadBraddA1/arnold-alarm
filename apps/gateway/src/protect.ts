@@ -12,6 +12,7 @@ export type ActionDef =
   | { kind: "webhook"; url: string }
   | { kind: "alarmWebhook"; id: string }
   | { kind: "testSound"; speakerIds: string[] }
+  | { kind: "ringtone"; ringtoneId: string; repeat?: number }
   | { kind: "talkback"; file: string; speakerIds: string[]; repeat?: number }
   | { kind: "automation"; id: string };
 
@@ -114,6 +115,7 @@ async function login(): Promise<Session> {
     res.headers.get("set-cookie")?.split(",")[0]?.split(";")[0] ||
     "";
   const csrf =
+    res.headers.get("x-updated-csrf-token") ||
     res.headers.get("x-csrf-token") ||
     res.headers.get("x-csrf-token".toLowerCase()) ||
     "";
@@ -176,6 +178,80 @@ async function insecureFetch(
     if (body) req.write(body);
     req.end();
   });
+}
+
+async function fetchSpeakerMacs(): Promise<string[]> {
+  const apiKey = process.env.PROTECT_API_KEY;
+  if (!apiKey) throw new Error("PROTECT_API_KEY required to list speakers");
+  const result = await insecureFetch(
+    `${protectBase()}/proxy/protect/integration/v1/speakers`,
+    {
+      headers: {
+        Accept: "application/json",
+        "X-API-KEY": apiKey,
+      },
+    },
+  );
+  if (result.status >= 400) {
+    throw new Error(`List speakers failed (${result.status})`);
+  }
+  const speakers = JSON.parse(result.text) as Array<{ mac?: string }>;
+  const macs = speakers.map((s) => s.mac).filter(Boolean) as string[];
+  if (!macs.length) throw new Error("No speaker MAC addresses found");
+  return macs;
+}
+
+async function playRingtone(ringtoneId: string, repeatTimes = 1) {
+  const session = await login();
+  const macs = await fetchSpeakerMacs();
+  const body = JSON.stringify({
+    name: "_arnold_alarm_play",
+    enable: true,
+    sources: [],
+    conditions: [
+      {
+        condition: {
+          type: "is",
+          source: "webhook",
+          value: crypto.randomUUID(),
+        },
+      },
+    ],
+    historyConditions: [],
+    schedules: [],
+    actions: [
+      {
+        type: "PLAY_SPEAKER",
+        order: 0,
+        metadata: {
+          ringtoneId,
+          repeatTimes: Math.max(1, repeatTimes),
+          volume: 100,
+          sources: macs.map((mac) => ({ type: "include", device: mac })),
+        },
+      },
+    ],
+    cooldown: { enable: false, timeout: 0 },
+  });
+  const result = await insecureFetch(
+    `${protectBase()}/proxy/protect/api/automations/run`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Cookie: session.cookie,
+        ...(session.csrf ? { "X-CSRF-Token": session.csrf } : {}),
+      },
+      body,
+    },
+  );
+  if (result.status >= 400) {
+    cachedSession = null;
+    throw new Error(
+      `Ringtone play failed (${result.status}): ${result.text.slice(0, 200)}`,
+    );
+  }
 }
 
 async function triggerWebhook(url: string) {
@@ -292,6 +368,11 @@ export async function triggerAction(def: ActionDef, options: PlayOptions = {}) {
   }
   if (def.kind === "testSound") {
     await triggerTestSound(def.speakerIds);
+    return;
+  }
+  if (def.kind === "ringtone") {
+    const repeat = options.loop ? 99 : (options.repeat ?? def.repeat ?? 1);
+    await playRingtone(def.ringtoneId, repeat);
     return;
   }
   if (def.kind === "talkback") {
