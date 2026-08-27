@@ -59,9 +59,24 @@ Install gateway:
 curl -fsSL https://raw.githubusercontent.com/BadBraddA1/arnold-alarm/main/apps/gateway/scripts/install.sh | bash
 ```
 
-Config: `~/.config/arnold-alarm/gateway.env` — set `PROTECT_*` and `ACTIONS` JSON when Alarm Manager webhooks are ready.
+Config: `~/.config/arnold-alarm/gateway.env` — `PROTECT_HOST=192.168.50.152` (COC Arnold Campus UNVR Pro), `PROTECT_API_KEY`, and `ACTIONS` JSON.
 
-## Protect (still required for sound)
+Known AI speakers (Integration API):
+
+| Name | ID |
+|---|---|
+| 200 Hallway | `6a3eee6d0024b103e44959f2` |
+| 100 Hallway | `6a3b38450023b103e433fcab` |
+| Lobby | `6a3b3da90010b103e4341d80` |
+| Fellowship hall | `6a3b06950026b103e4329ce6` |
+
+`bells.test` currently fires Protect **test-sound** on all four (not the Alarm Manager “TEST ACOC” clip). To wire a real Alarm Manager automation, set:
+
+```json
+{ "kind": "alarmWebhook", "id": "<webhook-uuid-from-Protect>" }
+```
+
+## Protect (still required for custom clips / talkback)
 
 1. Alarm Manager automations (play audio / text on speaker).
 2. Webhook or automation IDs → gateway `ACTIONS`.
