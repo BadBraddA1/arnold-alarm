@@ -30,6 +30,7 @@ import {
   hasScope,
   normalizeScopes,
   parseActionList,
+  resolvePlayLoop,
   SESSION_COOKIE,
   SESSION_IDLE_SEC,
   SESSION_MAX_AGE_SEC,
@@ -321,7 +322,10 @@ app.post("/api/play-remote", async (c) => {
     return c.json({ error: "Not allowed for this PIN." }, 403);
   }
   const delayMinutes = Math.max(0, Math.min(720, Number(body.delayMinutes) || 0));
-  const loop = Boolean(body.loop);
+  const loop = resolvePlayLoop(
+    actionId,
+    typeof body.loop === "boolean" ? body.loop : undefined,
+  );
 
   if (!(await getSystemArmed(c.env))) {
     return c.json(

@@ -72,3 +72,21 @@ export function actionAllowed(actionId: string, scopes: Scope[]): boolean {
   if (actionId.startsWith("evacuate.") && hasScope(scopes, "evacuate")) return true;
   return false;
 }
+
+/** Code Red / Blue (and main) loop on speakers until Stop & All clear. */
+export function loopsUntilAllClear(actionId: string): boolean {
+  return (
+    actionId === "evacuate.code_red" ||
+    actionId === "evacuate.code_blue" ||
+    actionId === "evacuate.main"
+  );
+}
+
+/** Explicit false wins; otherwise emergency codes default to looping. */
+export function resolvePlayLoop(
+  actionId: string,
+  loop: boolean | undefined,
+): boolean {
+  if (typeof loop === "boolean") return loop;
+  return loopsUntilAllClear(actionId);
+}

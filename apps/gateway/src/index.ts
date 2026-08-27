@@ -86,10 +86,16 @@ async function runAction(
   if (!def) {
     throw Object.assign(new Error(`Unknown action: ${actionId}`), { status: 404 });
   }
+  const loop =
+    typeof options.loop === "boolean"
+      ? options.loop
+      : actionId === "evacuate.code_red" ||
+        actionId === "evacuate.code_blue" ||
+        actionId === "evacuate.main";
   const repeat =
     options.repeat ??
     (def.kind === "talkback" && def.repeat ? def.repeat : undefined);
-  await triggerAction(def, { loop: options.loop, repeat, actionId });
+  await triggerAction(def, { loop, repeat, actionId });
 }
 
 function listScheduled() {

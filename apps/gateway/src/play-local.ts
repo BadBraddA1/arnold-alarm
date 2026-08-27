@@ -24,5 +24,9 @@ export async function playLocalAction(actionId: string): Promise<void> {
   }
   const def = actions[actionId];
   if (!def) throw new Error(`Unknown action: ${actionId}`);
-  await triggerAction(def, { actionId });
+  const loop =
+    actionId === "evacuate.code_red" ||
+    actionId === "evacuate.code_blue" ||
+    actionId === "evacuate.main";
+  await triggerAction(def, { actionId, loop });
 }

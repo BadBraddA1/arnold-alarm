@@ -123,7 +123,7 @@ Sequence example (second bell):
 
 ## Emergency codes UI
 
-- **Code Red** / **Code Blue** in thumb reach (sticky bottom), color-matched; **hold to confirm** (Cancel sits above).
+- **Code Red** / **Code Blue** in thumb reach (sticky bottom), color-matched; **hold to confirm** (Cancel sits above). **Loop until all clear** is on by default (uncheck for a single play).
 - **Stop & All clear** is green (Code Green ×2 only — not a direct Code Green play button).
 - **Speaker check** (start tone + TEST ACOC) sits under “Speaker check / test mode” (and on Home) — separate from class bells.
 

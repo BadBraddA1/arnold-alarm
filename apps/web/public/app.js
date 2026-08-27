@@ -1060,7 +1060,7 @@ function renderEvacuate() {
           </p>
         </div>
         <label class="checks" style="margin:0">
-          <input type="checkbox" id="evac-loop" /> Loop until all clear (lockdown / evacuate)
+          <input type="checkbox" id="evac-loop" checked /> Loop until all clear (default for Code Red / Blue)
         </label>
         <div id="evac-confirm"></div>
         <div id="play-msg"></div>
