@@ -71,10 +71,12 @@ Known AI speakers (Integration API):
 | Lobby | `6a3b3da90010b103e4341d80` |
 | Fellowship hall | `6a3b06950026b103e4329ce6` |
 
-Until Alarm Manager webhooks are linked, **all** UI actions (`bells.*`, `evacuate.code_*`) map to Protect **test-sound** on those speakers so buttons do not fail with `Unknown action`. Replace each with a real clip:
+Until Alarm Manager webhooks are linked, actions use **talkback** to stream `.ogg` clips from the Pi (`AUDIO_DIR`). Supports **loop** and **Stop speakers** from the emergency page.
+
+`PROTECT_USER` / `PROTECT_PASS` must be a **local Protect admin** on the UNVR (Settings → Admins → local access). SSH `root` is not the same account.
 
 ```json
-{ "kind": "alarmWebhook", "id": "<webhook-uuid-from-Protect>" }
+{ "kind": "talkback", "file": "Code_Blue_Master.ogg", "speakerIds": ["..."] }
 ```
 
 ## Protect (still required for custom clips / talkback)
