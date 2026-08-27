@@ -23,17 +23,21 @@ export async function signSession(env: Env, payload: SessionPayload): Promise<st
     .sign(enc(env.SESSION_SECRET));
 }
 
+export type VerifiedSession = SessionPayload & { expiresAt: number };
+
 export async function verifySession(
   env: Env,
   token: string,
-): Promise<SessionPayload | null> {
+): Promise<VerifiedSession | null> {
   try {
     const { payload } = await jwtVerify(token, enc(env.SESSION_SECRET));
     if (!payload.pinId || !payload.label) return null;
+    const exp = typeof payload.exp === "number" ? payload.exp * 1000 : Date.now();
     return {
       pinId: String(payload.pinId),
       label: String(payload.label),
       scopes: (payload.scopes as Scope[]) ?? [],
+      expiresAt: exp,
     };
   } catch {
     return null;

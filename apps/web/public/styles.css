@@ -345,3 +345,85 @@ button, input { font: inherit; }
   font-variant-numeric: tabular-nums;
 }
 .hidden { display: none !important; }
+
+.pin-shell {
+  justify-content: center;
+}
+.pin-card {
+  width: 100%;
+}
+.install-hint {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.last-play {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.9rem 1rem;
+  background: color-mix(in oklab, var(--bg-elevated) 88%, transparent);
+}
+.last-play-label {
+  margin: 0 0 0.2rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.last-play-main {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+.last-play-meta {
+  margin: 0.3rem 0 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.evac-shell {
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+}
+.evac-top {
+  flex: 1;
+}
+.evac-thumb-zone {
+  position: sticky;
+  bottom: 0;
+  margin-top: 1.25rem;
+  padding: 1rem 0 calc(0.5rem + env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, transparent, var(--bg) 28%);
+}
+.confirm-safe {
+  gap: 0.75rem;
+}
+.btn-hold {
+  position: relative;
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;
+  min-height: 3.5rem;
+}
+.btn-hold-fill {
+  position: absolute;
+  inset: 0;
+  transform: scaleX(var(--hold, 0));
+  transform-origin: left center;
+  background: color-mix(in oklab, #000 22%, transparent);
+  pointer-events: none;
+  will-change: transform;
+}
+.btn-hold-label {
+  position: relative;
+  z-index: 1;
+}
+.btn-hold.is-holding {
+  filter: brightness(1.05);
+}
+
+::selection {
+  background: color-mix(in oklab, var(--accent) 45%, transparent);
+  color: var(--ink);
+}

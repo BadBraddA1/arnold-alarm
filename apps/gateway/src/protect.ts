@@ -201,7 +201,35 @@ async function fetchSpeakerMacs(): Promise<string[]> {
   return macs;
 }
 
+let cachedRingtoneIds: Set<string> | null = null;
+
+async function assertRingtoneExists(ringtoneId: string) {
+  if (cachedRingtoneIds?.has(ringtoneId)) return;
+  const session = await login();
+  const result = await insecureFetch(`${protectBase()}/proxy/protect/api/bootstrap`, {
+    headers: {
+      Accept: "application/json",
+      Cookie: session.cookie,
+      ...(session.csrf ? { "X-CSRF-Token": session.csrf } : {}),
+    },
+  });
+  if (result.status >= 400) {
+    throw new Error(`Protect bootstrap failed (${result.status})`);
+  }
+  const data = JSON.parse(result.text) as { ringtones?: Array<{ id?: string }> };
+  const ids = new Set(
+    (data.ringtones || []).map((r) => r.id).filter(Boolean) as string[],
+  );
+  cachedRingtoneIds = ids;
+  if (!ids.has(ringtoneId)) {
+    throw new Error(
+      `Ringtone ${ringtoneId} not found on NVR — update ACTIONS ringtoneId in gateway.env`,
+    );
+  }
+}
+
 async function playRingtone(ringtoneId: string, repeatTimes = 1) {
+  await assertRingtoneExists(ringtoneId);
   const session = await login();
   const macs = await fetchSpeakerMacs();
   const body = JSON.stringify({
@@ -363,6 +391,24 @@ async function triggerTestSound(speakerIds: string[]) {
   }
   if (errors.length) {
     console.warn(`[test-sound] partial: ${ok}/${speakerIds.length}`, errors);
+  }
+}
+
+export async function checkProtectHealth(): Promise<{
+  ok: boolean;
+  error?: string;
+  speakers?: number;
+}> {
+  try {
+    await login();
+    const macs = await fetchSpeakerMacs();
+    return { ok: true, speakers: macs.length };
+  } catch (err) {
+    cachedSession = null;
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Protect unreachable",
+    };
   }
 }
 

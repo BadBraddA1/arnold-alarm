@@ -6,9 +6,16 @@ let state = {
   session: null,
   config: null,
   route: "pin",
-  gatewayStatus: "checking",
+  gatewayStatus: "checking", // checking | online | offline | protect_down
+  gatewayDetail: null,
+  remoteGateway: null, // { online, message, ageSec }
   message: null,
+  lastActivityAt: Date.now(),
+  idleSec: 30 * 60,
+  expiresAt: null,
 };
+
+let idleTimer = null;
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -20,9 +27,51 @@ async function api(path, opts = {}) {
   return { res, data };
 }
 
+function touchActivity() {
+  state.lastActivityAt = Date.now();
+}
+
+function setSessionFromAuth(data) {
+  state.session = { label: data.label, scopes: data.scopes };
+  state.expiresAt = data.expiresAt || Date.now() + (data.maxAgeSec || 2700) * 1000;
+  state.idleSec = data.idleSec || 30 * 60;
+  touchActivity();
+  armIdleWatch();
+}
+
+async function forceLogout(reason) {
+  try {
+    await api("/api/auth/logout", { method: "POST" });
+  } catch {
+    /* ignore */
+  }
+  state.session = null;
+  state.expiresAt = null;
+  state.message = reason
+    ? { kind: "err", text: reason }
+    : null;
+  setRoute("pin");
+}
+
+function armIdleWatch() {
+  if (idleTimer) clearInterval(idleTimer);
+  idleTimer = setInterval(() => {
+    if (!state.session) return;
+    const now = Date.now();
+    if (state.expiresAt && now >= state.expiresAt) {
+      void forceLogout("Session expired — enter PIN again.");
+      return;
+    }
+    const idleMs = (state.idleSec || 1800) * 1000;
+    if (now - state.lastActivityAt >= idleMs) {
+      void forceLogout("Signed out after inactivity.");
+    }
+  }, 5000);
+}
+
 function setRoute(route) {
   state.route = route;
-  state.message = null;
+  if (route !== "pin") state.message = null;
   render();
 }
 
@@ -46,22 +95,41 @@ function canRemotePlay() {
 
 function statusCopy() {
   if (canRemotePlay()) {
-    return ["ok", "Ready — plays through campus (works off Wi‑Fi)"];
+    if (!state.remoteGateway) {
+      return ["warn", "Checking campus gateway…"];
+    }
+    if (state.remoteGateway.online) {
+      return ["ok", "Ready — remote path to campus"];
+    }
+    return ["warn", state.remoteGateway.message || "Campus gateway not checking in"];
   }
   if (state.gatewayStatus === "online") {
     return ["ok", "Ready — on church network"];
   }
+  if (state.gatewayStatus === "protect_down") {
+    return ["warn", state.gatewayDetail || "Gateway up — Protect unreachable"];
+  }
   if (state.gatewayStatus === "checking") {
     return ["warn", "Checking campus connection…"];
   }
-  return ["bad", "Not on church Wi‑Fi — play unavailable"];
+  return ["bad", "Pi offline — join church Wi‑Fi or check alarm-gw"];
 }
 
 function playHint() {
   if (canRemotePlay()) {
-    return "Commands go to campus automatically — no church Wi‑Fi needed.";
+    return "Remote PINs queue commands — status will say queued until the gateway plays.";
   }
   return "You must be on church Wi‑Fi to play.";
+}
+
+function paintStatusRow() {
+  const row = $(".status-row");
+  if (!row || !state.session) return;
+  const [dot, text] = statusCopy();
+  const dotEl = row.querySelector(".dot");
+  const span = row.querySelector("span:last-child");
+  if (dotEl) dotEl.className = `dot ${dot}`;
+  if (span) span.textContent = text;
 }
 
 function header(label) {
@@ -81,17 +149,18 @@ function header(label) {
 
 function renderPin() {
   app.innerHTML = `
-    <main class="app-shell" style="justify-content:center">
-      <div class="card stack" style="gap:1.25rem">
+    <main class="app-shell pin-shell">
+      <div class="card stack pin-card" style="gap:1.25rem">
         <div>
-          <p class="muted" style="margin:0 0 0.35rem;text-transform:uppercase;letter-spacing:0.08em;font-size:0.75rem">Arnold Church of Christ</p>
-          <h1 class="page-title">Alarm</h1>
-          <p class="muted" style="margin:0">Enter your 6-digit PIN to continue.</p>
+          <div class="brand" style="margin-bottom:0.35rem">Arnold <span>Alarm</span></div>
+          <h1 class="page-title" style="margin-bottom:0.25rem">Staff PIN</h1>
+          <p class="muted" style="margin:0">Enter your 6-digit PIN. Sessions end after 45 minutes or 30 minutes idle.</p>
         </div>
         <div class="pin-inputs" id="pin-inputs">
           ${[0, 1, 2, 3, 4, 5].map((i) => `<input inputmode="numeric" maxlength="1" data-i="${i}" aria-label="Digit ${i + 1}" />`).join("")}
         </div>
-        <div id="pin-msg"></div>
+        <div id="pin-msg">${banner()}</div>
+        <p class="muted install-hint">Tip: on iPhone, Share → Add to Home Screen for one-tap access.</p>
       </div>
     </main>`;
   wirePin();
@@ -118,7 +187,7 @@ function wirePin() {
       inputs[0].focus();
       return;
     }
-    state.session = { label: data.label, scopes: data.scopes };
+    setSessionFromAuth(data);
     setRoute("home");
   }
 
@@ -158,12 +227,13 @@ function renderHome() {
           <h1 class="page-title">Choose a panel</h1>
           <p class="muted" style="margin:0">Access is limited to what your PIN allows.</p>
         </div>
+        <div id="last-play" class="last-play muted">Loading last play…</div>
         <div class="tile-grid">
           ${canBells ? `<button type="button" class="tile" data-go="bells"><h2>Class bells</h2><p>Play period and chapel tones on campus speakers.</p></button>` : ""}
           ${canEvac ? `<button type="button" class="tile" data-go="evacuate"><h2>Emergency codes</h2><p>Code Red, Blue, and Green announcements.</p></button>` : ""}
           ${canAdmin ? `<button type="button" class="tile" data-go="admin"><h2>PIN admin</h2><p>Add or revoke staff PINs.</p></button>` : ""}
         </div>
-        <div class="card stack">
+        <div class="stack" style="gap:0.5rem">
           <p style="margin:0;font-weight:600">Recent activity</p>
           <p class="muted" style="margin:0;font-size:0.85rem">Who activated what, and when (Central).</p>
           <div id="audit-list" class="muted">Loading…</div>
@@ -176,13 +246,29 @@ function renderHome() {
 
 async function loadAudit() {
   const el = $("#audit-list");
-  if (!el) return;
+  const lastEl = $("#last-play");
+  if (!el && !lastEl) return;
   const { res, data } = await api("/api/audit");
   if (!res.ok) {
-    el.textContent = "Could not load activity.";
+    if (el) el.textContent = "Could not load activity.";
+    if (lastEl) lastEl.textContent = "Could not load last play.";
     return;
   }
   const events = data.events || [];
+  if (lastEl) {
+    if (!events.length) {
+      lastEl.className = "last-play muted";
+      lastEl.textContent = "No plays yet.";
+    } else {
+      const e = events[0];
+      lastEl.className = "last-play";
+      lastEl.innerHTML = `
+        <p class="last-play-label">Last play</p>
+        <p class="last-play-main">${escapeHtml(actionLabel(e.actionId))}</p>
+        <p class="last-play-meta">${escapeHtml(e.label)} · ${escapeHtml(formatCentral(e.createdAt))} · ${escapeHtml(statusPlain(e.status))}</p>`;
+    }
+  }
+  if (!el) return;
   if (!events.length) {
     el.textContent = "No activations yet.";
     return;
@@ -197,10 +283,17 @@ async function loadAudit() {
         <div class="when">${escapeHtml(formatCentral(e.createdAt))}</div>
         <p class="who-action">${escapeHtml(e.label)} · ${escapeHtml(actionLabel(e.actionId))}</p>
         ${detail ? `<div class="meta">${escapeHtml(detail)}</div>` : ""}
-        <span class="status-pill ${ok ? "ok" : "bad"}">${escapeHtml(e.status)}</span>
+        <span class="status-pill ${ok ? "ok" : "bad"}">${escapeHtml(statusPlain(e.status))}</span>
       </div>`;
     })
     .join("");
+}
+
+function statusPlain(status) {
+  if (status === "queued") return "queued on campus";
+  if (status === "scheduled") return "scheduled";
+  if (status === "done") return "played";
+  return status;
 }
 
 function clockHtml() {
@@ -272,7 +365,7 @@ function formatCentral(iso) {
 }
 
 async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
-  msgEl.innerHTML = "";
+  msgEl.innerHTML = `<div class="muted">Sending…</div>`;
   if (actionId === "evacuate.code_green") {
     msgEl.innerHTML = `<div class="error-banner">All clear is only available via <strong>Stop &amp; All clear</strong>.</div>`;
     return;
@@ -289,7 +382,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
       return;
     }
     await logAudit(actionId, "remote", delayMinutes > 0 ? "scheduled" : "queued", loop ? "loop" : undefined);
-    msgEl.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "Queued for campus gateway.")}</div>`;
+    msgEl.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "Queued on campus — not playing yet.")}</div>`;
     return;
   }
 
@@ -314,9 +407,9 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
         return;
       }
       await logAudit(actionId, "lan", "scheduled", `delay ${delayMinutes}m`);
-      msgEl.innerHTML = `<div class="success-banner">Scheduled in ${delayMinutes} min on campus gateway.</div>`;
+      msgEl.innerHTML = `<div class="success-banner">Scheduled on campus — will play in ${delayMinutes} min (not playing yet).</div>`;
     } catch {
-      msgEl.innerHTML = `<div class="error-banner">Cannot reach the alarm gateway. Join church Wi‑Fi, or ask an admin for remote play access.</div>`;
+      msgEl.innerHTML = `<div class="error-banner">Pi offline — join church Wi‑Fi, or ask an admin for remote play access.</div>`;
     }
     return;
   }
@@ -345,14 +438,20 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
       return;
     }
     await logAudit(actionId, "lan", "done", loop ? "loop" : undefined);
-    msgEl.innerHTML = `<div class="success-banner">${actionId === "test.speakers" ? "Test tone sent to all speakers — listen at each location." : loop ? "Playing on speakers (looping)." : "Sent to speakers."}</div>`;
+    const playingMsg =
+      actionId === "test.speakers"
+        ? "Playing now — test tone on all speakers (walk the building)."
+        : loop
+          ? "Playing now on campus speakers (looping until all clear)."
+          : "Playing now on campus speakers.";
+    msgEl.innerHTML = `<div class="success-banner">${playingMsg}</div>`;
   } catch {
-    msgEl.innerHTML = `<div class="error-banner">Cannot reach the alarm gateway. Join the church Wi‑Fi network and try again — or ask an admin for remote play access.</div>`;
+    msgEl.innerHTML = `<div class="error-banner">Pi offline — join church Wi‑Fi and try again, or ask an admin for remote play access.</div>`;
   }
 }
 
 async function stopAndAllClear(msgEl) {
-  if (msgEl) msgEl.innerHTML = "";
+  if (msgEl) msgEl.innerHTML = `<div class="muted">Sending all clear…</div>`;
   if (canRemotePlay()) {
     const { res, data } = await api("/api/stop-remote", { method: "POST", body: "{}" });
     if (!res.ok) {
@@ -360,7 +459,7 @@ async function stopAndAllClear(msgEl) {
       return;
     }
     await logAudit("__all_clear__", "remote", "queued", "stop + all clear");
-    if (msgEl) msgEl.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "All clear queued.")}</div>`;
+    if (msgEl) msgEl.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "All clear queued on campus — not playing yet.")}</div>`;
     return;
   }
 
@@ -384,9 +483,9 @@ async function stopAndAllClear(msgEl) {
       return;
     }
     await logAudit("__all_clear__", "lan", "done", "stop + all clear");
-    if (msgEl) msgEl.innerHTML = `<div class="success-banner">All clear sent — Code Green playing on all speakers.</div>`;
+    if (msgEl) msgEl.innerHTML = `<div class="success-banner">Playing now — All clear (Code Green ×2) on all speakers.</div>`;
   } catch {
-    if (msgEl) msgEl.innerHTML = `<div class="error-banner">Cannot reach the alarm gateway.</div>`;
+    if (msgEl) msgEl.innerHTML = `<div class="error-banner">Pi offline — cannot reach the alarm gateway.</div>`;
   }
 }
 
@@ -487,6 +586,51 @@ function evacButtonMeta(action) {
   return { tone, short, title, className: `btn-code-${tone}` };
 }
 
+function wireHoldConfirm(btn, onConfirm) {
+  if (!btn) return;
+  let holdTimer = null;
+  let filled = false;
+  const HOLD_MS = 900;
+
+  const clear = () => {
+    if (holdTimer) clearTimeout(holdTimer);
+    holdTimer = null;
+    filled = false;
+    btn.classList.remove("is-holding");
+    btn.style.setProperty("--hold", "0");
+  };
+
+  const start = (e) => {
+    e.preventDefault();
+    clear();
+    btn.classList.add("is-holding");
+    const started = Date.now();
+    const tick = () => {
+      const p = Math.min(1, (Date.now() - started) / HOLD_MS);
+      btn.style.setProperty("--hold", String(p));
+      if (p >= 1 && !filled) {
+        filled = true;
+        clear();
+        onConfirm();
+        return;
+      }
+      if (!filled) holdTimer = setTimeout(tick, 32);
+    };
+    tick();
+  };
+
+  btn.addEventListener("pointerdown", start);
+  btn.addEventListener("pointerup", clear);
+  btn.addEventListener("pointerleave", clear);
+  btn.addEventListener("pointercancel", clear);
+  btn.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onConfirm();
+    }
+  });
+}
+
 function renderEvacuate() {
   const actions = (state.config?.evacuateActions || [
     { id: "evacuate.code_red", label: "Code Red — Evacuate" },
@@ -497,16 +641,30 @@ function renderEvacuate() {
     return rank(a.id) - rank(b.id);
   });
   app.innerHTML = `
-    <main class="app-shell">
+    <main class="app-shell evac-shell">
       ${header(state.session.label)}
       <button type="button" class="back-link" data-go="home">← Home</button>
-      <div class="stack">
+      <div class="stack evac-top">
         <div>
           <h1 class="page-title">Emergency codes</h1>
           <p class="evac-meta">
-            ${playHint()} Tap Red or Blue, then confirm. Plays on all campus speakers.
+            ${playHint()} Hold Confirm to send. Plays on all campus speakers.
           </p>
         </div>
+        <label class="checks" style="margin:0">
+          <input type="checkbox" id="evac-loop" /> Loop until all clear (lockdown / evacuate)
+        </label>
+        <div id="evac-confirm"></div>
+        <div id="play-msg"></div>
+        <div class="evac-speaker-check stack" style="gap:0.45rem">
+          <p class="evac-meta">Speaker check</p>
+          <button type="button" class="btn btn-ghost btn-block" data-play="test.speakers">
+            Test tone — all speakers
+          </button>
+          <p class="evac-meta" style="font-size:0.8rem">Built-in Protect test tone, one after another (~6 sec).</p>
+        </div>
+      </div>
+      <div class="evac-thumb-zone">
         <div class="evac-codes">
           ${ordered
             .map((a) => {
@@ -518,23 +676,11 @@ function renderEvacuate() {
             })
             .join("")}
         </div>
-        <label class="checks" style="margin:0">
-          <input type="checkbox" id="evac-loop" /> Loop until all clear (lockdown / evacuate)
-        </label>
         <div class="evac-all-clear">
           <button type="button" class="btn btn-code-green btn-block btn-evac" id="evac-all-clear">
             <span>Stop &amp; All clear</span>
             <span class="btn-evac-sub">Code Green ×2 on every speaker</span>
           </button>
-        </div>
-        <div id="evac-confirm"></div>
-        <div id="play-msg"></div>
-        <div class="evac-speaker-check stack" style="gap:0.45rem">
-          <p class="evac-meta">Speaker check</p>
-          <button type="button" class="btn btn-ghost btn-block" data-play="test.speakers">
-            Test tone — all speakers
-          </button>
-          <p class="evac-meta" style="font-size:0.8rem">Built-in Protect test tone, one after another (~6 sec).</p>
         </div>
       </div>
     </main>`;
@@ -545,16 +691,18 @@ function renderEvacuate() {
       const label = btn.dataset.label || id;
       const tone = btn.dataset.tone || evacCodeTone(id);
       $("#evac-confirm").innerHTML = `
-        <div class="confirm-box confirm-box--${tone} stack">
-          <p style="margin:0">Confirm play <strong>${escapeHtml(label)}</strong> on campus AI speakers.</p>
-          <button type="button" class="btn btn-code-${tone} btn-block" data-confirm-evac="${escapeHtml(id)}">Confirm now</button>
+        <div class="confirm-box confirm-box--${tone} stack confirm-safe">
           <button type="button" class="btn btn-ghost btn-block" data-cancel-evac>Cancel</button>
+          <p style="margin:0;text-align:center">Confirm <strong>${escapeHtml(label)}</strong> on campus AI speakers.</p>
+          <button type="button" class="btn btn-code-${tone} btn-block btn-hold" data-confirm-evac="${escapeHtml(id)}" aria-label="Hold to confirm">
+            <span class="btn-hold-fill"></span>
+            <span class="btn-hold-label">Hold to confirm</span>
+          </button>
         </div>`;
-      $("[data-confirm-evac]")?.addEventListener("click", (e) => {
-        const actionId = e.currentTarget.dataset.confirmEvac;
+      wireHoldConfirm($("[data-confirm-evac]"), () => {
         const loop = $("#evac-loop")?.checked;
         $("#evac-confirm").innerHTML = "";
-        void playAction(actionId, $("#play-msg"), 0, loop);
+        void playAction(id, $("#play-msg"), 0, loop);
       });
       $("[data-cancel-evac]")?.addEventListener("click", () => {
         $("#evac-confirm").innerHTML = "";
@@ -565,12 +713,15 @@ function renderEvacuate() {
 
   $("#evac-all-clear")?.addEventListener("click", () => {
     $("#evac-confirm").innerHTML = `
-      <div class="confirm-box confirm-box--green stack">
-        <p style="margin:0">Issue <strong>All clear</strong> on all campus speakers? Code Green will play <strong>twice</strong>. Any active lockdown/evacuate loop should be ended first.</p>
-        <button type="button" class="btn btn-code-green btn-block" id="confirm-all-clear">Confirm all clear</button>
+      <div class="confirm-box confirm-box--green stack confirm-safe">
         <button type="button" class="btn btn-ghost btn-block" data-cancel-evac>Cancel</button>
+        <p style="margin:0;text-align:center">Issue <strong>All clear</strong>? Code Green plays <strong>twice</strong>. End any lockdown loop first.</p>
+        <button type="button" class="btn btn-code-green btn-block btn-hold" id="confirm-all-clear" aria-label="Hold to confirm all clear">
+          <span class="btn-hold-fill"></span>
+          <span class="btn-hold-label">Hold to confirm all clear</span>
+        </button>
       </div>`;
-    $("#confirm-all-clear")?.addEventListener("click", () => {
+    wireHoldConfirm($("#confirm-all-clear"), () => {
       $("#evac-confirm").innerHTML = "";
       void stopAndAllClear($("#play-msg"));
     });
@@ -591,7 +742,7 @@ async function renderAdmin() {
       <div class="stack">
         <div>
           <h1 class="page-title">PIN admin</h1>
-          <p class="muted" style="margin:0">Hashed PINs in Cloudflare D1. Check <strong>Remote play</strong> only for people trusted to ring speakers from cell.</p>
+          <p class="muted" style="margin:0">Hashed PINs in Cloudflare D1. Grant <strong>Remote play</strong> only to trusted staff — it can ring speakers from anywhere. Sessions auto-end after 45 minutes (30 min idle).</p>
         </div>
         <form class="card stack" id="pin-form">
           <div class="field"><label>Label</label><input name="label" required placeholder="Office desk" /></div>
@@ -681,10 +832,7 @@ document.addEventListener("click", (e) => {
   if (!t) return;
   if (t.dataset.go) setRoute(t.dataset.go);
   if (t.dataset.action === "logout") {
-    void api("/api/auth/logout", { method: "POST" }).then(() => {
-      state.session = null;
-      setRoute("pin");
-    });
+    void forceLogout(null);
   }
   if (t.dataset.play) {
     const loop = state.route === "evacuate" && $("#evac-loop")?.checked;
@@ -702,40 +850,63 @@ document.addEventListener("click", (e) => {
 });
 
 async function checkGateway() {
-  // Remote users never need LAN gateway reachability — don't flip the status to "not on Wi‑Fi".
+  if (!state.session) return;
+
   if (canRemotePlay()) {
-    const row = $(".status-row");
-    if (row) {
-      const [dot, text] = statusCopy();
-      const dotEl = row.querySelector(".dot");
-      const span = row.querySelector("span:last-child");
-      if (dotEl) dotEl.className = `dot ${dot}`;
-      if (span) span.textContent = text;
+    try {
+      const { res, data } = await api("/api/gateway/status");
+      if (res.ok) {
+        state.remoteGateway = {
+          online: !!data.online,
+          message: data.message,
+          ageSec: data.ageSec,
+        };
+      } else {
+        state.remoteGateway = {
+          online: false,
+          message: "Could not check campus gateway.",
+          ageSec: null,
+        };
+      }
+    } catch {
+      state.remoteGateway = {
+        online: false,
+        message: "Could not check campus gateway.",
+        ageSec: null,
+      };
     }
+    paintStatusRow();
     return;
   }
 
   if (!state.config?.gatewayUrl) return;
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 2500);
+    const timer = setTimeout(() => ctrl.abort(), 3500);
     const res = await fetch(`${state.config.gatewayUrl}/health`, {
       signal: ctrl.signal,
       cache: "no-store",
     });
     clearTimeout(timer);
-    state.gatewayStatus = res.ok ? "online" : "offline";
+    if (!res.ok) {
+      state.gatewayStatus = "offline";
+      state.gatewayDetail = null;
+    } else {
+      const data = await res.json().catch(() => ({}));
+      if (data.protect && data.protect.ok === false) {
+        state.gatewayStatus = "protect_down";
+        state.gatewayDetail =
+          data.protect.error || "Gateway up — Protect unreachable";
+      } else {
+        state.gatewayStatus = "online";
+        state.gatewayDetail = null;
+      }
+    }
   } catch {
     state.gatewayStatus = "offline";
+    state.gatewayDetail = null;
   }
-  const row = $(".status-row");
-  if (row && state.session) {
-    const [dot, text] = statusCopy();
-    const dotEl = row.querySelector(".dot");
-    const span = row.querySelector("span:last-child");
-    if (dotEl) dotEl.className = `dot ${dot}`;
-    if (span) span.textContent = text;
-  }
+  paintStatusRow();
 }
 
 async function boot() {
@@ -743,7 +914,7 @@ async function boot() {
   state.config = cfg.data;
   const sess = await api("/api/auth/session");
   if (sess.res.ok && sess.data.authenticated) {
-    state.session = { label: sess.data.label, scopes: sess.data.scopes };
+    setSessionFromAuth(sess.data);
     state.route = "home";
   }
   render();
@@ -754,5 +925,9 @@ async function boot() {
     if (state.route === "bells") void refreshSchedule($("#sched-list"));
   }, 2000);
 }
+
+["pointerdown", "keydown", "touchstart"].forEach((evt) => {
+  document.addEventListener(evt, () => touchActivity(), { passive: true });
+});
 
 boot();

@@ -115,7 +115,7 @@ export async function enqueuePlay(
     label: string;
     delayMinutes: number;
     loop?: boolean;
-    command?: "play" | "stop";
+    command?: "play" | "stop" | "all_clear";
   },
 ) {
   await env.DB.prepare(
@@ -237,4 +237,20 @@ export async function listAudit(env: Env, limit = 50) {
       created_at: string;
     }>();
   return results ?? [];
+}
+
+export async function touchGatewayHeartbeat(env: Env, detail?: string) {
+  await env.DB.prepare(
+    `INSERT INTO gateway_heartbeat (id, last_seen, detail)
+     VALUES ('primary', datetime('now'), ?)
+     ON CONFLICT(id) DO UPDATE SET last_seen = datetime('now'), detail = excluded.detail`,
+  )
+    .bind(detail ?? null)
+    .run();
+}
+
+export async function getGatewayHeartbeat(env: Env) {
+  return env.DB.prepare(
+    `SELECT last_seen, detail FROM gateway_heartbeat WHERE id = 'primary'`,
+  ).first<{ last_seen: string; detail: string | null }>();
 }

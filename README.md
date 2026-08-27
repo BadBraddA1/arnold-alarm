@@ -17,8 +17,9 @@ Pi    → UniFi Protect NVR → AI speakers
 ```
 
 - Site works on cellular. **Play** needs either church Wi‑Fi (direct to Pi) or a PIN with **remote** scope (Worker queue → Pi poll).
-- PINs live in **Cloudflare D1** (hashed). Sessions + play tokens are JWTs.
-- Recent activity on home shows who played what (Central time); stacked cards on mobile.
+- PINs live in **Cloudflare D1** (hashed). Sessions expire after **45 minutes** (or **30 minutes idle**) so a left-unlocked phone does not stay armed.
+- Status distinguishes **queued on campus** vs **playing now**, and **Pi offline** vs **Protect unreachable**.
+- Home shows **last play** plus recent activity (Central time).
 
 ## Repo
 
@@ -26,6 +27,7 @@ Pi    → UniFi Protect NVR → AI speakers
 apps/web/       Cloudflare Worker (Hono) + static UI + D1
 apps/gateway/   Pi agent → Protect Alarm Manager
 scripts/        Pi bootstrap
+docs/           Plans (e.g. building-time bells)
 ```
 
 ## Web (Cloudflare)
@@ -88,22 +90,38 @@ Emergency + bell clips use Protect **ringtones** (`PLAY_SPEAKER` on all speaker 
 { "kind": "talkback", "file": "Code_Blue_Master.ogg", "speakerIds": ["..."] }
 ```
 
-## Protect (still required for custom clips / talkback)
-
-1. Alarm Manager automations (play audio / text on speaker).
-2. Webhook or automation IDs → gateway `ACTIONS` on the Pi (`~/.config/arnold-alarm/gateway.env`), then `sudo systemctl restart arnold-alarm-gateway`.
-3. Same `PLAY_JWT_SECRET` as the Worker.
-
-Remote play also needs Worker secret `GATEWAY_POLL_SECRET` matching the Pi, and the PIN’s **remote** scope checked in PIN admin.
-
 ## Class bells UI
 
 - Big **building clock** (America/Chicago).
 - **Ring in 15 min** after service (timer on the Pi).
 - Play-now buttons per automation.
+- **Planned:** schedule rings at an absolute building time — see [`docs/BELLS-BUILDING-TIME.md`](docs/BELLS-BUILDING-TIME.md).
 
 ## Emergency codes UI
 
-- **Code Red** / **Code Blue** buttons are color-matched (red / blue), large tap targets, confirm before play.
+- **Code Red** / **Code Blue** in thumb reach (sticky bottom), color-matched; **hold to confirm** (Cancel sits above).
 - **Stop & All clear** is green (Code Green ×2 only — not a direct Code Green play button).
-- Confirm sheets tint to the same code color. Test tone stays secondary under “Speaker check”.
+- Test tone stays secondary under “Speaker check”.
+
+## Ops / safety notes
+
+- **Remote scope** is never implied by admin — grant sparingly in PIN admin.
+- **Mid-clip stop:** Protect **ringtones cannot be cut mid-play**. `Stop` only aborts **talkback** streams. All clear stops talkback (if any) then plays Code Green ×2. Accept for ringtone path; revisit only if we need talkback mid-stop again.
+- **Ringtone ID validation:** gateway checks the NVR ringtone list before play (bad IDs used to return HTTP 200 and silence).
+- **PWA:** Add to Home Screen on iPhone (Share → Add to Home Screen). Manifest + icons ship with the Worker assets.
+
+## Empty-campus verification (when people leave)
+
+No need to re-test speakers for UI work. When the building is empty, re-verify once:
+
+1. Test tone — walk each horn.
+2. Code Blue once (short), then All clear.
+3. Remote queue from cell (remote PIN) — confirm status says queued, then audio after Pi poll.
+
+## Protect (optional backup / custom clips)
+
+1. Alarm Manager automations (play audio / text on speaker) — optional backup to ringtones.
+2. Webhook or automation IDs → gateway `ACTIONS` on the Pi (`~/.config/arnold-alarm/gateway.env`), then `sudo systemctl restart arnold-alarm-gateway`.
+3. Same `PLAY_JWT_SECRET` as the Worker.
+
+Remote play also needs Worker secret `GATEWAY_POLL_SECRET` matching the Pi, and the PIN’s **remote** scope checked in PIN admin.

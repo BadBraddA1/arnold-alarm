@@ -14,6 +14,8 @@ import {
   listAllPins,
   listAudit,
   setPinActive,
+  touchGatewayHeartbeat,
+  getGatewayHeartbeat,
   updateAuditStatus,
   updatePinScopes,
 } from "./db";
@@ -23,6 +25,7 @@ import {
   normalizeScopes,
   parseActionList,
   SESSION_COOKIE,
+  SESSION_IDLE_SEC,
   SESSION_MAX_AGE_SEC,
   type Env,
   type Scope,
@@ -91,6 +94,9 @@ app.get("/api/auth/session", (c) => {
     authenticated: true,
     label: session.label,
     scopes: session.scopes,
+    expiresAt: session.expiresAt,
+    idleSec: SESSION_IDLE_SEC,
+    maxAgeSec: SESSION_MAX_AGE_SEC,
   });
 });
 
@@ -134,7 +140,14 @@ app.post("/api/auth/pin", async (c) => {
     path: "/",
     maxAge: SESSION_MAX_AGE_SEC,
   });
-  return c.json({ ok: true, label: matched.label, scopes });
+  return c.json({
+    ok: true,
+    label: matched.label,
+    scopes,
+    expiresAt: Date.now() + SESSION_MAX_AGE_SEC * 1000,
+    idleSec: SESSION_IDLE_SEC,
+    maxAgeSec: SESSION_MAX_AGE_SEC,
+  });
 });
 
 app.post("/api/auth/logout", (c) => {
@@ -218,10 +231,11 @@ app.post("/api/play-remote", async (c) => {
     ok: true,
     id,
     mode: "remote",
+    status: delayMinutes > 0 ? "scheduled" : "queued",
     message:
       delayMinutes > 0
-        ? `Queued on campus gateway — will play in ${delayMinutes} min.`
-        : "Queued on campus gateway — playing shortly.",
+        ? `Queued on campus — not playing yet. Gateway will ring in about ${delayMinutes} min.`
+        : "Queued on campus — not playing yet. Gateway usually picks this up within a few seconds.",
   });
 });
 
@@ -255,12 +269,49 @@ app.post("/api/stop-remote", async (c) => {
   });
   return c.json({
     ok: true,
-    message: "All clear queued — Code Green will play on all speakers shortly.",
+    status: "queued",
+    message:
+      "All clear queued on campus — not playing yet. Code Green ×2 starts when the gateway picks it up.",
+  });
+});
+
+app.get("/api/gateway/status", async (c) => {
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  const row = await getGatewayHeartbeat(c.env);
+  if (!row?.last_seen) {
+    return c.json({
+      seen: false,
+      online: false,
+      ageSec: null,
+      message: "Campus gateway has not checked in yet.",
+    });
+  }
+  const seenMs = Date.parse(
+    row.last_seen.includes("T") || row.last_seen.includes("Z")
+      ? row.last_seen
+      : `${row.last_seen}Z`,
+  );
+  const ageSec = Number.isFinite(seenMs)
+    ? Math.max(0, Math.round((Date.now() - seenMs) / 1000))
+    : null;
+  const online = ageSec != null && ageSec < 45;
+  return c.json({
+    seen: true,
+    online,
+    ageSec,
+    lastSeen: row.last_seen,
+    message: online
+      ? "Campus gateway online (remote path)."
+      : ageSec != null
+        ? `Campus gateway last seen ${ageSec}s ago — queued plays may wait.`
+        : "Campus gateway status unknown.",
   });
 });
 
 app.get("/api/gateway/poll", async (c) => {
   if (!gatewayAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
+  await touchGatewayHeartbeat(c.env, "poll");
   const jobs = await claimPendingJobs(c.env, 5);
   return c.json({
     jobs: jobs.map((j) => ({
@@ -277,6 +328,7 @@ app.get("/api/gateway/poll", async (c) => {
 
 app.post("/api/gateway/ack", async (c) => {
   if (!gatewayAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
+  await touchGatewayHeartbeat(c.env, "ack");
   const body = (await c.req.json().catch(() => ({}))) as {
     id?: string;
     ok?: boolean;

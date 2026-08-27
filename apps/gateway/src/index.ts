@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { jwtVerify } from "jose";
 import { z } from "zod";
-import { triggerAction, type ActionMap } from "./protect.js";
+import { triggerAction, checkProtectHealth, type ActionMap } from "./protect.js";
 import { getPlaybackState, stopTalkback } from "./talkback.js";
 
 const PORT = Number(process.env.PORT || 8787);
@@ -179,6 +179,7 @@ async function pollCloudOnce() {
         await ackCloud(job.id, true);
       } else {
         await runAction(job.actionId, { loop: job.loop });
+        console.log(`[poll] job ok ${job.id} ${job.actionId}`);
         await ackCloud(job.id, true);
       }
     } catch (err) {
@@ -215,6 +216,26 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
 
   if (req.method === "GET" && url.pathname === "/health") {
     const playback = getPlaybackState();
+    let protect: { ok: boolean; error?: string; speakers?: number } = {
+      ok: false,
+      error: "not checked",
+    };
+    try {
+      protect = await Promise.race([
+        checkProtectHealth(),
+        new Promise<typeof protect>((resolve) =>
+          setTimeout(
+            () => resolve({ ok: false, error: "Protect check timed out" }),
+            2500,
+          ),
+        ),
+      ]);
+    } catch (err) {
+      protect = {
+        ok: false,
+        error: err instanceof Error ? err.message : "Protect check failed",
+      };
+    }
     sendJson(res, 200, {
       ok: true,
       service: "arnold-alarm-gateway",
@@ -222,6 +243,7 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
       scheduled: listScheduled().length,
       poll: Boolean(POLL_SECRET),
       playback,
+      protect,
       now: Date.now(),
     });
     return;

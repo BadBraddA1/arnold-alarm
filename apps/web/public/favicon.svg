@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Arnold Alarm">
+  <rect width="64" height="64" rx="14" fill="#0f1419"/>
+  <path d="M32 12c-8.8 0-16 7.2-16 16v8.2l-3.4 5.1A2 2 0 0 0 14.3 45h35.4a2 2 0 0 0 1.7-3.7L48 36.2V28c0-8.8-7.2-16-16-16z" fill="#e8a317"/>
+  <rect x="27" y="46" width="10" height="6" rx="3" fill="#d94841"/>
+</svg>

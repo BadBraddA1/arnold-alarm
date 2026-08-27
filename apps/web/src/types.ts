@@ -7,8 +7,11 @@ export type SessionPayload = {
 };
 
 export const SESSION_COOKIE = "arnold_alarm_session";
-export const SESSION_MAX_AGE_SEC = 60 * 60 * 12;
+/** Short TTL so a phone left unlocked does not stay armed all day. */
+export const SESSION_MAX_AGE_SEC = 45 * 60;
 export const PLAY_TOKEN_TTL_SEC = 60;
+/** Client idle auto-sign-out (must be ≤ SESSION_MAX_AGE_SEC). */
+export const SESSION_IDLE_SEC = 30 * 60;
 
 export type Env = {
   DB: D1Database;
