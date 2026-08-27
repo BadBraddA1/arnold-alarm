@@ -529,6 +529,13 @@ async function handlePaLive(
     `[pa] live talkback starting (ext ${extension}) → ${speakerIds.length} speakers`,
   );
 
+  try {
+    const { setAllSpeakerVolumes, getVolumeProfile } = await import("./protect.js");
+    await setAllSpeakerVolumes(getVolumeProfile().evac);
+  } catch (err) {
+    console.warn("[pa] volume set failed", err);
+  }
+
   const preamble =
     (process.env.PA_PREAMBLE_FILE || "Test_Start_Tone.mp3").trim();
   if (preamble && preamble.toLowerCase() !== "off" && preamble.toLowerCase() !== "none") {

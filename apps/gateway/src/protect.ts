@@ -192,7 +192,17 @@ async function insecureFetch(
   });
 }
 
-async function fetchSpeakerMacs(): Promise<string[]> {
+export type ProtectSpeaker = {
+  id: string;
+  name: string;
+  state: string;
+  volume: number;
+  mac?: string;
+  speakerStatus?: string;
+  speakerMode?: string;
+};
+
+export async function listProtectSpeakers(): Promise<ProtectSpeaker[]> {
   const apiKey = process.env.PROTECT_API_KEY;
   if (!apiKey) throw new Error("PROTECT_API_KEY required to list speakers");
   const result = await insecureFetch(
@@ -207,10 +217,134 @@ async function fetchSpeakerMacs(): Promise<string[]> {
   if (result.status >= 400) {
     throw new Error(`List speakers failed (${result.status})`);
   }
-  const speakers = JSON.parse(result.text) as Array<{ mac?: string }>;
+  const raw = JSON.parse(result.text) as Array<{
+    id?: string;
+    name?: string;
+    state?: string;
+    volume?: number;
+    mac?: string;
+    speakerState?: { status?: string; mode?: string };
+  }>;
+  return (raw || [])
+    .filter((s) => s.id)
+    .map((s) => ({
+      id: String(s.id),
+      name: String(s.name || s.id).replace(/^Speaker\s*-\s*/i, ""),
+      state: String(s.state || "UNKNOWN"),
+      volume: Number(s.volume ?? 0),
+      mac: s.mac,
+      speakerStatus: s.speakerState?.status,
+      speakerMode: s.speakerState?.mode,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function fetchSpeakerMacs(): Promise<string[]> {
+  const speakers = await listProtectSpeakers();
   const macs = speakers.map((s) => s.mac).filter(Boolean) as string[];
   if (!macs.length) throw new Error("No speaker MAC addresses found");
   return macs;
+}
+
+/** Clamp Protect speaker volume (Integration API accepts 0–100). */
+export function clampSpeakerVolume(n: number, min = 20, max = 100): number {
+  const v = Math.round(Number(n));
+  if (!Number.isFinite(v)) return max;
+  return Math.min(max, Math.max(min, v));
+}
+
+export type VolumeProfile = {
+  bells: number;
+  evac: number;
+};
+
+let volumeProfile: VolumeProfile = { bells: 60, evac: 100 };
+
+export function setVolumeProfile(next: Partial<VolumeProfile>) {
+  if (typeof next.bells === "number") {
+    volumeProfile.bells = clampSpeakerVolume(next.bells, 20, 100);
+  }
+  if (typeof next.evac === "number") {
+    volumeProfile.evac = clampSpeakerVolume(next.evac, 50, 100);
+  }
+}
+
+export function getVolumeProfile(): VolumeProfile {
+  return { ...volumeProfile };
+}
+
+/** Bells use quieter profile; everything else (evac, test, PA, all clear) uses full. */
+export function volumeForAction(actionId: string): number {
+  if (actionId.startsWith("bells.")) return volumeProfile.bells;
+  return volumeProfile.evac;
+}
+
+export async function setAllSpeakerVolumes(volume: number): Promise<void> {
+  const apiKey = process.env.PROTECT_API_KEY;
+  if (!apiKey) throw new Error("PROTECT_API_KEY required to set speaker volume");
+  const target = clampSpeakerVolume(volume, 0, 100);
+  const speakers = await listProtectSpeakers();
+  if (!speakers.length) throw new Error("No speakers found");
+  const errors: string[] = [];
+  await Promise.all(
+    speakers.map(async (s) => {
+      if (s.volume === target) return;
+      const result = await insecureFetch(
+        `${protectBase()}/proxy/protect/integration/v1/speakers/${encodeURIComponent(s.id)}`,
+        {
+          method: "PATCH",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "X-API-KEY": apiKey,
+          },
+          body: JSON.stringify({ volume: target }),
+        },
+      );
+      if (result.status >= 400) {
+        errors.push(`${s.name}: ${result.status}`);
+      }
+    }),
+  );
+  if (errors.length === speakers.length) {
+    throw new Error(`Set volume failed: ${errors.join("; ")}`);
+  }
+  if (errors.length) {
+    console.warn(`[volume] partial set to ${target}:`, errors);
+  } else {
+    console.log(`[volume] speakers → ${target}`);
+  }
+}
+
+/** Lower for bells during play, then restore emergency level so idle stays loud-ready. */
+export async function withActionVolume<T>(
+  actionId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const playVol = volumeForAction(actionId);
+  const restoreVol = volumeProfile.evac;
+  try {
+    await setAllSpeakerVolumes(playVol);
+  } catch (err) {
+    console.warn(
+      "[volume] pre-play set failed",
+      err instanceof Error ? err.message : err,
+    );
+  }
+  try {
+    return await fn();
+  } finally {
+    if (playVol !== restoreVol) {
+      try {
+        await setAllSpeakerVolumes(restoreVol);
+      } catch (err) {
+        console.warn(
+          "[volume] restore failed",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
 }
 
 let cachedRingtoneIds: Set<string> | null = null;
@@ -240,7 +374,7 @@ async function assertRingtoneExists(ringtoneId: string) {
   }
 }
 
-async function playRingtone(ringtoneId: string, repeatTimes = 1) {
+async function playRingtone(ringtoneId: string, repeatTimes = 1, volume = 100) {
   await assertRingtoneExists(ringtoneId);
   const session = await login();
   const macs = await fetchSpeakerMacs();
@@ -266,7 +400,7 @@ async function playRingtone(ringtoneId: string, repeatTimes = 1) {
         metadata: {
           ringtoneId,
           repeatTimes: Math.max(1, repeatTimes),
-          volume: 100,
+          volume: clampSpeakerVolume(volume, 0, 100),
           sources: macs.map((mac) => ({ type: "include", device: mac })),
         },
       },
@@ -412,9 +546,8 @@ export async function checkProtectHealth(): Promise<{
   speakers?: number;
 }> {
   try {
-    await login();
-    const macs = await fetchSpeakerMacs();
-    return { ok: true, speakers: macs.length };
+    const speakers = await listProtectSpeakers();
+    return { ok: true, speakers: speakers.length };
   } catch (err) {
     cachedSession = null;
     return {
@@ -475,7 +608,11 @@ async function runSequence(
       continue;
     }
     if (step.kind === "ringtone") {
-      await playRingtone(step.ringtoneId, step.repeat ?? 1);
+      await playRingtone(
+        step.ringtoneId,
+        step.repeat ?? 1,
+        volumeForAction(actionId),
+      );
       i += 1;
       continue;
     }
@@ -505,7 +642,7 @@ export async function triggerAction(def: ActionDef, options: PlayOptions = {}) {
     const repeat = options.loop
       ? Math.min(20, options.repeat ?? def.repeat ?? 10)
       : (options.repeat ?? def.repeat ?? 1);
-    await playRingtone(def.ringtoneId, repeat);
+    await playRingtone(def.ringtoneId, repeat, volumeForAction(options.actionId || ""));
     return;
   }
   if (def.kind === "talkback") {

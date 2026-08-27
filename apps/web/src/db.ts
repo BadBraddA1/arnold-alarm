@@ -373,6 +373,98 @@ export async function setEvacPhase(env: Env, phase: EvacPhase) {
     .run();
 }
 
+export type VolumeSettings = { bells: number; evac: number };
+
+function clampVol(n: number, min: number, max: number, fallback: number) {
+  const v = Math.round(Number(n));
+  if (!Number.isFinite(v)) return fallback;
+  return Math.min(max, Math.max(min, v));
+}
+
+export async function getVolumeSettings(env: Env): Promise<VolumeSettings> {
+  const { results } = await env.DB.prepare(
+    `SELECT key, value FROM system_settings WHERE key IN ('bell_volume', 'evac_volume')`,
+  ).all<{ key: string; value: string }>();
+  let bells = 60;
+  let evac = 100;
+  for (const row of results ?? []) {
+    if (row.key === "bell_volume") bells = clampVol(Number(row.value), 20, 100, 60);
+    if (row.key === "evac_volume") evac = clampVol(Number(row.value), 50, 100, 100);
+  }
+  return { bells, evac };
+}
+
+export async function setVolumeSettings(
+  env: Env,
+  next: Partial<VolumeSettings>,
+): Promise<VolumeSettings> {
+  const cur = await getVolumeSettings(env);
+  const bells =
+    typeof next.bells === "number"
+      ? clampVol(next.bells, 20, 100, cur.bells)
+      : cur.bells;
+  const evac =
+    typeof next.evac === "number"
+      ? clampVol(next.evac, 50, 100, cur.evac)
+      : cur.evac;
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO system_settings (key, value) VALUES ('bell_volume', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).bind(String(bells)),
+    env.DB.prepare(
+      `INSERT INTO system_settings (key, value) VALUES ('evac_volume', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).bind(String(evac)),
+  ]);
+  return { bells, evac };
+}
+
+export type SpeakerStatusRow = {
+  id: string;
+  name: string;
+  state: string;
+  volume: number;
+  speakerStatus?: string;
+  speakerMode?: string;
+  mac?: string;
+};
+
+export async function setSpeakersSnapshot(
+  env: Env,
+  speakers: SpeakerStatusRow[],
+  at = Date.now(),
+) {
+  await env.DB.prepare(
+    `INSERT INTO system_settings (key, value) VALUES ('speakers_status', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  )
+    .bind(JSON.stringify({ at, speakers }))
+    .run();
+}
+
+export async function getSpeakersSnapshot(env: Env): Promise<{
+  at: number | null;
+  speakers: SpeakerStatusRow[];
+}> {
+  const row = await env.DB.prepare(
+    `SELECT value FROM system_settings WHERE key = 'speakers_status'`,
+  ).first<{ value: string }>();
+  if (!row?.value) return { at: null, speakers: [] };
+  try {
+    const parsed = JSON.parse(row.value) as {
+      at?: number;
+      speakers?: SpeakerStatusRow[];
+    };
+    return {
+      at: typeof parsed.at === "number" ? parsed.at : null,
+      speakers: Array.isArray(parsed.speakers) ? parsed.speakers : [],
+    };
+  } catch {
+    return { at: null, speakers: [] };
+  }
+}
+
 /** Map evacuate action ids to phase transitions / gates. */
 export function evacPhaseForAction(actionId: string): EvacPhase | null {
   if (actionId === "evacuate.code_red" || actionId === "evacuate.main") return "red";

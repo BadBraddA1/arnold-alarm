@@ -27,6 +27,10 @@ import {
   setEvacPhase,
   evacActionAllowedForPhase,
   evacPhaseForAction,
+  getVolumeSettings,
+  setVolumeSettings,
+  setSpeakersSnapshot,
+  getSpeakersSnapshot,
   updateAuditStatus,
   updatePinScopes,
 } from "./db";
@@ -741,6 +745,7 @@ app.get("/api/gateway/poll", async (c) => {
   if (!gatewayAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
   await touchGatewayHeartbeat(c.env, "poll");
   const jobs = await claimPendingJobs(c.env, 5);
+  const volumes = await getVolumeSettings(c.env);
   return c.json({
     jobs: jobs.map((j) => ({
       id: j.id,
@@ -752,7 +757,42 @@ app.get("/api/gateway/poll", async (c) => {
       loop: Boolean(j.loop_play),
       command: j.command ?? "play",
     })),
+    volumes,
   });
+});
+
+app.post("/api/gateway/telemetry", async (c) => {
+  if (!gatewayAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
+  await touchGatewayHeartbeat(c.env, "telemetry");
+  const body = (await c.req.json().catch(() => ({}))) as {
+    speakers?: Array<{
+      id?: string;
+      name?: string;
+      state?: string;
+      volume?: number;
+      speakerStatus?: string;
+      speakerMode?: string;
+      mac?: string;
+    }>;
+    at?: number;
+  };
+  const speakers = (body.speakers || [])
+    .filter((s) => s.id && s.name)
+    .map((s) => ({
+      id: String(s.id),
+      name: String(s.name),
+      state: String(s.state || "UNKNOWN"),
+      volume: Number(s.volume ?? 0),
+      speakerStatus: s.speakerStatus,
+      speakerMode: s.speakerMode,
+      mac: s.mac,
+    }));
+  await setSpeakersSnapshot(
+    c.env,
+    speakers,
+    typeof body.at === "number" ? body.at : Date.now(),
+  );
+  return c.json({ ok: true });
 });
 
 app.post("/api/gateway/ack", async (c) => {
@@ -957,6 +997,65 @@ app.post("/api/admin/armed", async (c) => {
     message: body.armed
       ? "System armed — speakers will play commands."
       : "System unarmed — commands are recorded but speakers stay silent.",
+  });
+});
+
+/** Admin — live speaker status from campus gateway telemetry + volume profiles. */
+app.get("/api/admin/speakers", async (c) => {
+  const session = c.get("session");
+  if (!session?.scopes.includes("admin")) return c.json({ error: "Forbidden" }, 403);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
+  const [snap, volumes, hb] = await Promise.all([
+    getSpeakersSnapshot(c.env),
+    getVolumeSettings(c.env),
+    getGatewayHeartbeat(c.env),
+  ]);
+  let gatewayOnline = false;
+  let gatewayAgeSec: number | null = null;
+  if (hb?.last_seen) {
+    const seenMs = Date.parse(
+      hb.last_seen.includes("T") || hb.last_seen.includes("Z")
+        ? hb.last_seen
+        : `${hb.last_seen}Z`,
+    );
+    if (Number.isFinite(seenMs)) {
+      gatewayAgeSec = Math.max(0, Math.round((Date.now() - seenMs) / 1000));
+      gatewayOnline = gatewayAgeSec < 45;
+    }
+  }
+  const ageSec =
+    snap.at != null
+      ? Math.max(0, Math.round((Date.now() - snap.at) / 1000))
+      : null;
+  return c.json({
+    speakers: snap.speakers,
+    updatedAt: snap.at,
+    ageSec,
+    volumes,
+    gateway: { online: gatewayOnline, ageSec: gatewayAgeSec },
+  });
+});
+
+app.post("/api/admin/volumes", async (c) => {
+  const session = c.get("session");
+  if (!session?.scopes.includes("admin")) return c.json({ error: "Forbidden" }, 403);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    bells?: number;
+    evac?: number;
+  };
+  const volumes = await setVolumeSettings(c.env, {
+    bells: typeof body.bells === "number" ? body.bells : undefined,
+    evac: typeof body.evac === "number" ? body.evac : undefined,
+  });
+  return c.json({
+    ok: true,
+    volumes,
+    message: `Bell volume ${volumes.bells}% · Emergency ${volumes.evac}% (applies on next campus play).`,
   });
 });
 

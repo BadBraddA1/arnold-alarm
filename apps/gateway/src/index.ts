@@ -1,7 +1,15 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { jwtVerify } from "jose";
 import { z } from "zod";
-import { triggerAction, checkProtectHealth, type ActionMap } from "./protect.js";
+import {
+  triggerAction,
+  checkProtectHealth,
+  listProtectSpeakers,
+  setVolumeProfile,
+  getVolumeProfile,
+  withActionVolume,
+  type ActionMap,
+} from "./protect.js";
 import { getPlaybackState, stopTalkback, stopTalkbackAndWait } from "./talkback.js";
 import { getPaStatus, startPaAudioSocket } from "./pa-sip.js";
 
@@ -12,8 +20,19 @@ const POLL_URL =
   process.env.CLOUD_POLL_URL || "https://alarm.arnoldcoc.org/api/gateway/poll";
 const ACK_URL =
   process.env.CLOUD_ACK_URL || "https://alarm.arnoldcoc.org/api/gateway/ack";
+const TELEMETRY_URL =
+  process.env.CLOUD_TELEMETRY_URL ||
+  "https://alarm.arnoldcoc.org/api/gateway/telemetry";
 const POLL_SECRET = process.env.GATEWAY_POLL_SECRET || "";
 const POLL_MS = Number(process.env.CLOUD_POLL_MS || 2000);
+
+// Optional local defaults; cloud Admin settings override via poll.
+if (process.env.BELL_VOLUME || process.env.EVAC_VOLUME) {
+  setVolumeProfile({
+    bells: process.env.BELL_VOLUME ? Number(process.env.BELL_VOLUME) : undefined,
+    evac: process.env.EVAC_VOLUME ? Number(process.env.EVAC_VOLUME) : undefined,
+  });
+}
 
 type ScheduledJob = {
   id: string;
@@ -70,13 +89,17 @@ async function runAction(
   options: { loop?: boolean; repeat?: number } = {},
 ) {
   if (actionId === "__all_clear__") {
-    await stopTalkbackAndWait();
-    const def = actions["evacuate.code_green"];
-    if (!def) {
-      throw Object.assign(new Error("All clear action not configured"), { status: 500 });
-    }
-    // Sequence stitches start tone + Code Green ×2 in one talkback session.
-    await triggerAction(def, { actionId: "evacuate.code_green" });
+    await withActionVolume("evacuate.code_green", async () => {
+      await stopTalkbackAndWait();
+      const def = actions["evacuate.code_green"];
+      if (!def) {
+        throw Object.assign(new Error("All clear action not configured"), {
+          status: 500,
+        });
+      }
+      // Sequence stitches start tone + Code Green ×2 in one talkback session.
+      await triggerAction(def, { actionId: "evacuate.code_green" });
+    });
     return;
   }
   if (actionId === "__stop__") {
@@ -96,7 +119,9 @@ async function runAction(
   const repeat =
     options.repeat ??
     (def.kind === "talkback" && def.repeat ? def.repeat : undefined);
-  await triggerAction(def, { loop, repeat, actionId });
+  await withActionVolume(actionId, () =>
+    triggerAction(def, { loop, repeat, actionId }),
+  );
 }
 
 function listScheduled() {
@@ -142,6 +167,35 @@ async function ackCloud(id: string, ok: boolean, error?: string) {
   }
 }
 
+let lastTelemetryAt = 0;
+
+async function reportTelemetry(force = false) {
+  if (!POLL_SECRET) return;
+  const now = Date.now();
+  if (!force && now - lastTelemetryAt < 8_000) return;
+  lastTelemetryAt = now;
+  try {
+    const speakers = await listProtectSpeakers();
+    await fetch(TELEMETRY_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${POLL_SECRET}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        speakers,
+        volumes: getVolumeProfile(),
+        at: Date.now(),
+      }),
+    });
+  } catch (err) {
+    console.warn(
+      "[telemetry]",
+      err instanceof Error ? err.message : "report failed",
+    );
+  }
+}
+
 async function pollCloudOnce() {
   if (!POLL_SECRET) return;
   let res: Response;
@@ -166,7 +220,11 @@ async function pollCloudOnce() {
       loop?: boolean;
       command?: string;
     }>;
+    volumes?: { bells?: number; evac?: number };
   };
+  if (data.volumes) {
+    setVolumeProfile(data.volumes);
+  }
   for (const job of data.jobs || []) {
     console.log(
       `[poll] job ${job.id} ${job.command || "play"} ${job.actionId} delay=${job.delayMinutes} from ${job.label}`,
@@ -196,6 +254,8 @@ async function pollCloudOnce() {
       await ackCloud(job.id, false, message);
     }
   }
+  // Refresh Admin speaker list after jobs (or idle polls).
+  void reportTelemetry(Boolean(data.jobs?.length));
 }
 
 const playSchema = z.object({
@@ -260,6 +320,18 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
 
   if (req.method === "GET" && url.pathname === "/playback") {
     sendJson(res, 200, getPlaybackState());
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/speakers") {
+    try {
+      const speakers = await listProtectSpeakers();
+      sendJson(res, 200, { speakers, volumes: getVolumeProfile() });
+    } catch (err) {
+      sendJson(res, 502, {
+        error: err instanceof Error ? err.message : "Protect speakers failed",
+      });
+    }
     return;
   }
 

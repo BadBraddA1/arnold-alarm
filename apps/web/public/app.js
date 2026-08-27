@@ -13,6 +13,7 @@ let state = {
   lastActivityAt: Date.now(),
   idleSec: 30 * 60,
   expiresAt: null,
+  _speakersTimer: null,
 };
 
 let idleTimer = null;
@@ -90,6 +91,10 @@ function setRoute(route) {
   if (route === "home") {
     const solo = singlePanelRoute();
     if (solo) route = solo;
+  }
+  if (state._speakersTimer && route !== "admin") {
+    clearInterval(state._speakersTimer);
+    state._speakersTimer = null;
   }
   state.route = route;
   if (route !== "pin") state.message = null;
@@ -1296,7 +1301,7 @@ function startEvacArmCountdown({ actionId, label, tone, onFire }) {
           This phone is alarming. Campus speakers stay silent until it sends.
           Auto-sends in <strong id="evac-count-sec">${remaining}</strong>s — or send now / cancel.
         </p>
-        <div class="evac-countdown-bar" aria-hidden="true"><span style="width:${((TOTAL - remaining) / TOTAL) * 100}%"></span></div>
+        <div class="evac-countdown-bar" aria-hidden="true"><span style="transform:scaleX(${(TOTAL - remaining) / TOTAL})"></span></div>
         <button type="button" class="btn btn-code-${tone} btn-block" id="evac-send-now">Send now</button>
         <button type="button" class="btn btn-ghost btn-block" data-cancel-evac>Cancel</button>
       </div>`;
@@ -1328,7 +1333,7 @@ function startEvacArmCountdown({ actionId, label, tone, onFire }) {
     const bar = box.querySelector(".evac-countdown-bar > span");
     if (num) num.textContent = String(remaining);
     if (sec) sec.textContent = String(remaining);
-    if (bar) bar.style.width = `${((TOTAL - remaining) / TOTAL) * 100}%`;
+    if (bar) bar.style.transform = `scaleX(${(TOTAL - remaining) / TOTAL})`;
     try {
       navigator.vibrate?.(remaining <= 3 ? [120] : [60]);
     } catch {
@@ -1438,10 +1443,105 @@ function renderEvacuate() {
   });
 }
 
+function speakerStatusHtml(data) {
+  const speakers = data.speakers || [];
+  if (!speakers.length) {
+    return `<p class="muted" style="margin:0">No speaker report yet — gateway will publish within a few seconds when online.</p>`;
+  }
+  return `<ul class="speaker-list">${speakers
+    .map((s) => {
+      const ok = String(s.state || "").toUpperCase() === "CONNECTED";
+      const activity = s.speakerStatus || "—";
+      return `<li class="speaker-row">
+        <span class="speaker-dot ${ok ? "speaker-dot--ok" : "speaker-dot--bad"}" title="${escapeHtml(s.state || "")}"></span>
+        <span class="speaker-name">${escapeHtml(s.name)}</span>
+        <span class="muted speaker-meta">${escapeHtml(String(s.state || "UNKNOWN"))} · vol ${Number(s.volume) || 0}% · ${escapeHtml(activity)}</span>
+      </li>`;
+    })
+    .join("")}</ul>`;
+}
+
+async function refreshAdminSpeakers() {
+  const list = $("#speakers-list");
+  const meta = $("#speakers-meta");
+  if (!list) return;
+  const { res, data } = await api("/api/admin/speakers");
+  if (!res.ok) {
+    list.innerHTML = `<p class="error-banner" style="margin:0">${escapeHtml(data.error || "Could not load speakers.")}</p>`;
+    return;
+  }
+  list.innerHTML = speakerStatusHtml(data);
+  const gw = data.gateway?.online
+    ? "Gateway online"
+    : data.gateway?.ageSec != null
+      ? `Gateway last seen ${data.gateway.ageSec}s ago`
+      : "Gateway offline";
+  const age =
+    data.ageSec == null
+      ? "waiting for first report"
+      : data.ageSec < 15
+        ? "just updated"
+        : `updated ${data.ageSec}s ago`;
+  if (meta) meta.textContent = `${gw} · ${age}`;
+
+  const bell = $("#bell-vol");
+  const evac = $("#evac-vol");
+  if (bell && data.volumes && document.activeElement !== bell) {
+    bell.value = String(data.volumes.bells);
+    const lbl = $("#bell-vol-label");
+    if (lbl) lbl.textContent = `${data.volumes.bells}%`;
+  }
+  if (evac && data.volumes && document.activeElement !== evac) {
+    evac.value = String(data.volumes.evac);
+    const lbl = $("#evac-vol-label");
+    if (lbl) lbl.textContent = `${data.volumes.evac}%`;
+  }
+}
+
+function wireAdminSpeakers() {
+  const syncLabels = () => {
+    const bell = $("#bell-vol");
+    const evac = $("#evac-vol");
+    const bl = $("#bell-vol-label");
+    const el = $("#evac-vol-label");
+    if (bell && bl) bl.textContent = `${bell.value}%`;
+    if (evac && el) el.textContent = `${evac.value}%`;
+  };
+  $("#bell-vol")?.addEventListener("input", syncLabels);
+  $("#evac-vol")?.addEventListener("input", syncLabels);
+  $("#refresh-speakers")?.addEventListener("click", () => void refreshAdminSpeakers());
+  $("#save-volumes")?.addEventListener("click", async () => {
+    const msg = $("#volume-msg");
+    const bells = Number($("#bell-vol")?.value || 60);
+    const evac = Number($("#evac-vol")?.value || 100);
+    if (msg) msg.innerHTML = `<p class="muted" style="margin:0">Saving…</p>`;
+    const { res, data } = await api("/api/admin/volumes", {
+      method: "POST",
+      body: JSON.stringify({ bells, evac }),
+    });
+    if (!res.ok) {
+      if (msg)
+        msg.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not save.")}</div>`;
+      return;
+    }
+    if (msg)
+      msg.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "Saved.")}</div>`;
+  });
+  void refreshAdminSpeakers();
+  if (state._speakersTimer) clearInterval(state._speakersTimer);
+  state._speakersTimer = setInterval(() => {
+    if (state.route === "admin") void refreshAdminSpeakers();
+  }, 10_000);
+}
+
 async function renderAdmin() {
   const { res, data } = await api("/api/admin/pins");
   const pins = res.ok ? data.pins || [] : [];
   const armed = state.config?.armed !== false;
+  if (state._speakersTimer) {
+    clearInterval(state._speakersTimer);
+    state._speakersTimer = null;
+  }
   app.innerHTML = `
     <main class="app-shell">
       ${header(state.session.label)}
@@ -1468,6 +1568,39 @@ async function renderAdmin() {
             </button>
           </div>
           <div id="arm-msg"></div>
+        </div>
+        <div class="card stack" style="gap:0.65rem;padding:1rem 1.1rem">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap">
+            <div>
+              <p style="margin:0;font-weight:600">Campus speakers</p>
+              <p class="muted" style="margin:0.25rem 0 0;font-size:0.85rem" id="speakers-meta">Loading status…</p>
+            </div>
+            <button type="button" class="btn btn-ghost" id="refresh-speakers" style="min-height:2.5rem;padding:0.4rem 1rem">Refresh</button>
+          </div>
+          <div id="speakers-list" class="muted" style="font-size:0.9rem">…</div>
+          <div class="stack" style="gap:0.55rem;border-top:1px solid color-mix(in oklab, CanvasText 12%, transparent);padding-top:0.75rem">
+            <p style="margin:0;font-weight:600">Volume profiles</p>
+            <p class="muted" style="margin:0;font-size:0.85rem">
+              Class bells play quieter; emergency codes, all clear, speaker check, and PA stay at full.
+              Speakers return to emergency level after each bell.
+            </p>
+            <label class="field" style="margin:0">
+              <span style="display:flex;justify-content:space-between;gap:0.5rem">
+                <span>Class bells</span>
+                <strong id="bell-vol-label">60%</strong>
+              </span>
+              <input type="range" id="bell-vol" min="20" max="100" step="5" value="60" />
+            </label>
+            <label class="field" style="margin:0">
+              <span style="display:flex;justify-content:space-between;gap:0.5rem">
+                <span>Emergency / PA</span>
+                <strong id="evac-vol-label">100%</strong>
+              </span>
+              <input type="range" id="evac-vol" min="50" max="100" step="5" value="100" />
+            </label>
+            <button type="button" class="btn btn-primary" id="save-volumes" style="min-height:2.5rem">Save volumes</button>
+            <div id="volume-msg"></div>
+          </div>
         </div>
         <div class="card stack" style="gap:0.55rem;padding:1rem 1.1rem">
           <p style="margin:0;font-weight:600">Speaker check</p>
@@ -1520,6 +1653,7 @@ async function renderAdmin() {
   $("#admin-test-speakers")?.addEventListener("click", () => {
     void playAction("test.speakers", $("#admin-test-msg"));
   });
+  wireAdminSpeakers();
 
   $("#pin-form")?.addEventListener("submit", async (e) => {
     e.preventDefault();
