@@ -1,156 +1,74 @@
 #!/usr/bin/env bash
-# Install convenience PA: dial 1010 → Asterisk (Docker if needed) → AudioSocket → talkback.
-# NOT for emergency use.
+# Enable convenience PA on the gateway: SIP dial PA_EXT (default 1010) → live talkback.
+# Built into the Node gateway (no Asterisk). NOT for emergency use.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-AST_SRC="$ROOT/asterisk"
 ENV_FILE="${HOME}/.config/arnold-alarm/gateway.env"
-TALK_IP="${TALK_CONSOLE_IP:-}"
-SOFT_PASS="${PA_SOFTPHONE_PASSWORD:-$(openssl rand -hex 4)}"
 PA_EXT="${PA_EXT:-1010}"
-AST_CONF_DIR="${HOME}/.config/arnold-alarm/asterisk"
-COMPOSE_FILE="$AST_CONF_DIR/docker-compose.yml"
+TALK_IP="${TALK_CONSOLE_IP:-$(ip -4 route 2>/dev/null | awk '/default/ {print $3; exit}')}"
+SPEAKERS="${PA_SPEAKER_IDS:-}"
 
-echo "==> Arnold Alarm convenience PA installer"
-echo "    Extension ${PA_EXT} → AudioSocket 127.0.0.1:9092 → Protect talkback"
+echo "==> Arnold Alarm convenience PA"
+echo "    Dial ${PA_EXT} → gateway SIP → Protect talkback"
 echo "    This is NOT an emergency path."
 
-if [[ "$(id -u)" -eq 0 ]]; then
-  echo "Run as the pi user (not root); script will sudo where needed."
-  exit 1
-fi
-
-if [[ -z "$TALK_IP" ]]; then
-  TALK_IP="$(ip -4 route | awk '/default/ {print $3; exit}')"
-  echo "TALK_CONSOLE_IP defaulting to gateway ${TALK_IP}"
-fi
-
-mkdir -p "$AST_CONF_DIR"
-sed "s/CHANGE_ME_SOFTPHONE/${SOFT_PASS}/g; s/TALK_CONSOLE_IP/${TALK_IP}/g; s/1010/${PA_EXT}/g; s/888/${PA_EXT}/g" \
-  "$AST_SRC/pjsip.conf" > "$AST_CONF_DIR/pjsip.conf"
-sed "s/1010/${PA_EXT}/g; s/888/${PA_EXT}/g" \
-  "$AST_SRC/extensions.conf" > "$AST_CONF_DIR/extensions.conf"
-
-# Minimal modules / rtp so container starts cleanly
-cat > "$AST_CONF_DIR/modules.conf" <<'EOF'
-[modules]
-autoload=yes
-noload => chan_sip.so
-EOF
-
-cat > "$AST_CONF_DIR/rtp.conf" <<'EOF'
-[general]
-rtpstart=10000
-rtpend=10100
-EOF
-
-cat > "$AST_CONF_DIR/asterisk.conf" <<'EOF'
-[directories]
-astetcdir => /etc/asterisk
-astmoddir => /usr/lib/asterisk/modules
-astvarlibdir => /var/lib/asterisk
-astdbdir => /var/lib/asterisk
-astkeydir => /var/lib/asterisk
-astdatadir => /var/lib/asterisk
-astagidir => /var/lib/asterisk/agi-bin
-astspooldir => /var/spool/asterisk
-astrundir => /var/run/asterisk
-astlogdir => /var/log/asterisk
-EOF
-
-install_asterisk_apt() {
-  sudo apt-get update -qq
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq asterisk && return 0
-  return 1
-}
-
-install_asterisk_docker() {
-  if ! command -v docker >/dev/null 2>&1; then
-    echo "==> Installing Docker (Asterisk not in apt)"
-    curl -fsSL https://get.docker.com | sudo sh
-    sudo usermod -aG docker "$USER" || true
-  fi
-  # Ensure docker usable without re-login
-  if ! docker info >/dev/null 2>&1; then
-    echo "==> Using sudo docker (re-login later for group docker)"
-    DOCKER="sudo docker"
-  else
-    DOCKER="docker"
-  fi
-
-  # Arm-friendly Asterisk 20 image with PJSIP + AudioSocket
-  IMAGE="${ASTERISK_IMAGE:-andrius/asterisk:20-current}"
-  echo "==> Pulling $IMAGE"
-  $DOCKER pull "$IMAGE"
-
-  cat > "$COMPOSE_FILE" <<EOF
-services:
-  asterisk:
-    image: ${IMAGE}
-    container_name: arnold-alarm-asterisk
-    network_mode: host
-    restart: unless-stopped
-    volumes:
-      - ${AST_CONF_DIR}/pjsip.conf:/etc/asterisk/pjsip.conf:ro
-      - ${AST_CONF_DIR}/extensions.conf:/etc/asterisk/extensions.conf:ro
-      - ${AST_CONF_DIR}/modules.conf:/etc/asterisk/modules.conf:ro
-      - ${AST_CONF_DIR}/rtp.conf:/etc/asterisk/rtp.conf:ro
-EOF
-
-  if command -v docker >/dev/null && docker compose version >/dev/null 2>&1; then
-    (cd "$AST_CONF_DIR" && $DOCKER compose -f "$COMPOSE_FILE" up -d)
-  else
-    $DOCKER rm -f arnold-alarm-asterisk 2>/dev/null || true
-    $DOCKER run -d --name arnold-alarm-asterisk --network host --restart unless-stopped \
-      -v "$AST_CONF_DIR/pjsip.conf:/etc/asterisk/pjsip.conf:ro" \
-      -v "$AST_CONF_DIR/extensions.conf:/etc/asterisk/extensions.conf:ro" \
-      -v "$AST_CONF_DIR/modules.conf:/etc/asterisk/modules.conf:ro" \
-      -v "$AST_CONF_DIR/rtp.conf:/etc/asterisk/rtp.conf:ro" \
-      "$IMAGE"
-  fi
-}
-
-echo "==> Installing Asterisk"
-if install_asterisk_apt; then
-  echo "    apt asterisk OK"
-  sudo cp "$AST_CONF_DIR/pjsip.conf" /etc/asterisk/pjsip.conf
-  sudo cp "$AST_CONF_DIR/extensions.conf" /etc/asterisk/extensions.conf
-  sudo systemctl enable asterisk 2>/dev/null || true
-  sudo systemctl restart asterisk
-else
-  echo "    apt asterisk unavailable — using Docker"
-  install_asterisk_docker
-fi
-
-echo "==> Enabling PA in gateway.env"
 mkdir -p "$(dirname "$ENV_FILE")"
 touch "$ENV_FILE"
-if ! grep -q '^PA_ENABLED=' "$ENV_FILE" 2>/dev/null; then
-  cat >> "$ENV_FILE" <<EOF
 
-# Convenience PA (SIP → talkback) — NOT for emergency
-PA_ENABLED=1
-PA_AUDIOSOCKET_PORT=9092
-EOF
-else
-  # portable sed
-  if sed --version >/dev/null 2>&1; then
-    sed -i 's/^PA_ENABLED=.*/PA_ENABLED=1/' "$ENV_FILE"
-  else
-    sed -i '' 's/^PA_ENABLED=.*/PA_ENABLED=1/' "$ENV_FILE"
-  fi
+# Known campus speaker IDs if not provided
+if [[ -z "$SPEAKERS" ]]; then
+  SPEAKERS="6a3eee6d0024b103e44959f2,6a3b38450023b103e433fcab,6a3b3da90010b103e4341d80,6a3b06950026b103e4329ce6"
 fi
 
-echo "==> Restart arnold-alarm-gateway"
-sudo systemctl restart arnold-alarm-gateway 2>/dev/null || \
-  echo "    (restart arnold-alarm-gateway manually if unit name differs)"
+python3 - <<PY
+from pathlib import Path
+p = Path("$ENV_FILE")
+text = p.read_text() if p.exists() else ""
+updates = {
+  "PA_ENABLED": "1",
+  "PA_EXT": "$PA_EXT",
+  "PA_SIP_PORT": "5060",
+  "PA_SPEAKER_IDS": "$SPEAKERS",
+  "PA_ACCEPT_ANY": "1",
+  "TALK_CONSOLE_IP": "$TALK_IP",
+}
+lines = text.splitlines()
+keys = set()
+out = []
+for line in lines:
+  if "=" in line and not line.strip().startswith("#"):
+    k = line.split("=", 1)[0].strip()
+    if k in updates:
+      out.append(f"{k}={updates[k]}")
+      keys.add(k)
+      continue
+  out.append(line)
+if not any("Convenience PA" in l for l in out):
+  out.append("")
+  out.append("# Convenience PA (SIP → talkback) — NOT for emergency")
+for k, v in updates.items():
+  if k not in keys:
+    out.append(f"{k}={v}")
+p.write_text("\n".join(out) + "\n")
+print("wrote", p)
+PY
 
+grep -E '^(PA_|TALK_CONSOLE_IP=)' "$ENV_FILE" || true
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+if command -v pnpm >/dev/null; then
+  pnpm install
+  pnpm build
+else
+  npm install
+  npm run build
+fi
+
+sudo systemctl restart arnold-alarm-gateway
 sleep 2
 echo ""
-echo "Done."
-echo "  Softphone: SIP user 100 / pass ${SOFT_PASS} @ $(hostname -I | awk '{print $1}') → dial ${PA_EXT}"
-echo "  UniFi Talk: third-party SIP → this Pi :5060 (Talk console IP used: ${TALK_IP})"
-echo "  Health: curl -s http://127.0.0.1:8787/health | jq .pa"
+curl -s http://127.0.0.1:8787/health | python3 -c 'import sys,json; print(json.dumps(json.load(sys.stdin).get("pa"), indent=2))'
 echo ""
-echo "Remind staff: dial-in PA is convenience only — emergencies use Arnold Alarm codes."
+echo "Softphone / Talk: dial ${PA_EXT} @ $(hostname -I | awk '{print $1}'):5060"
+echo "UniFi Talk: third-party SIP provider → Pi LAN IP, UDP 5060 (console IP hint: ${TALK_IP})"

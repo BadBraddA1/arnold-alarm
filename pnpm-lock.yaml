@@ -10,9 +10,15 @@ importers:
 
   apps/gateway:
     dependencies:
+      '@vexyl.ai/sip':
+        specifier: ^1.0.4
+        version: 1.0.4(ws@8.21.0)
       jose:
         specifier: ^6.0.11
         version: 6.2.10
+      ws:
+        specifier: ^8.18.3
+        version: 8.21.0
       zod:
         specifier: ^3.25.76
         version: 3.25.76
@@ -20,6 +26,9 @@ importers:
       '@types/node':
         specifier: ^22.17.2
         version: 22.20.1
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       tsx:
         specifier: ^4.20.4
         version: 4.23.12
@@ -613,6 +622,18 @@ packages:
   '@types/node@22.20.1':
     resolution: {integrity: sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==}
 
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
+
+  '@vexyl.ai/sip@1.0.4':
+    resolution: {integrity: sha512-do+27p1juWGOXnESm3h22gY4PVdjjsh/YP4eLcAX5OFUk0SXoGxHnqGI72QccOW8FEl5pcgHyuRFkuawnQdsPw==}
+    engines: {node: '>=18.0.0'}
+    peerDependencies:
+      ws: '>=7.0.0'
+    peerDependenciesMeta:
+      ws:
+        optional: true
+
   bcryptjs@3.0.3:
     resolution: {integrity: sha512-GlF5wPWnSa/X5LKM1o0wz0suXIINz1iHRLvTS+sLyi7XPbe5ycmYI3DlZqVGZZtDgl4DmasFg7gOB3JYbphV5g==}
     hasBin: true
@@ -1067,6 +1088,14 @@ snapshots:
   '@types/node@22.20.1':
     dependencies:
       undici-types: 6.21.0
+
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 22.20.1
+
+  '@vexyl.ai/sip@1.0.4(ws@8.21.0)':
+    optionalDependencies:
+      ws: 8.21.0
 
   bcryptjs@3.0.3: {}
 

@@ -123,41 +123,38 @@ No need to re-test speakers for UI work. When the building is empty, re-verify o
 
 ## Convenience PA (SIP dial-in — not emergency)
 
-Office can dial **1010** on the Pi; Asterisk answers and streams live audio to campus AI Speakers via Protect talkback. **Do not use for lockdown / evacuate** — use Arnold Alarm emergency codes.
+Office dials **1010**; the gateway answers SIP and streams live audio to campus AI Speakers via Protect talkback. **Do not use for lockdown / evacuate.**
 
 ```
-Talk phone → UniFi Talk → Asterisk on Pi (ext 1010)
-                         → AudioSocket → gateway → Protect talkback → speakers
+Talk / softphone → sip:1010@alarm-gw (UDP 5060) → gateway → Protect talkback → speakers
 ```
 
-### Install on the Pi
+Built into the Node gateway (`@vexyl.ai/sip`) — no Asterisk required.
+
+### Install / enable on the Pi
 
 ```bash
-# From the arnold-alarm checkout on the Pi (after gateway is installed):
-cd ~/arnold-alarm/apps/gateway   # or your clone path
+cd ~/arnold-alarm/apps/gateway
 git pull
-pnpm build && sudo systemctl restart arnold-alarm-gateway
-
-TALK_CONSOLE_IP=192.168.x.x bash scripts/install-pa.sh
+TALK_CONSOLE_IP=192.168.1.1 bash scripts/install-pa.sh
 ```
 
-Set `PA_SPEAKER_IDS` in `~/.config/arnold-alarm/gateway.env` to the Protect speaker device IDs (same IDs as talkback ACTIONS), then restart the gateway. Confirm:
+Confirm:
 
 ```bash
 curl -s http://127.0.0.1:8787/health | jq .pa
-# { "enabled": true, "listening": true, "port": 9092, ... }
+# enabled, listening, extension 1010, mode sip-ua
 ```
 
-**Softphone test (before Talk):** register SIP user `100` to the Pi (password printed by install script), dial **1010**, speak, hang up.
+**Softphone test:** register or dial `sip:1010@192.168.1.204` (Pi LAN), speak, hang up.
 
 ### UniFi Talk wiring
 
-1. Talk → Settings → enable **Static Signaling Port** if required by your console.
-2. Talk → Settings → **Third-Party SIP Provider** → Custom → point at the Pi LAN IP (UDP **5060**). Allow the Talk console IP in Asterisk `talk-identify` (`TALK_CONSOLE_IP` in install).
-3. Route a dialable number / short code so desk phones reach the trunk (target extension **1010** on the Pi). Talk’s UI varies by version — if short-code routing is awkward, keep softphone PA until Talk trunk dialing is confirmed.
-4. Test from a desk phone: dial → hear yourself on campus speakers → hang up (talkback stops).
+1. Talk → Settings → **Third-Party SIP Provider** → Custom → Pi LAN IP, UDP **5060**.
+2. Route short code / number **1010** to that trunk (UI varies by Talk version).
+3. Test from a desk phone: dial 1010 → speak on campus speakers → hang up.
 
-Configs live in [`apps/gateway/asterisk/`](apps/gateway/asterisk/).
+Env (`~/.config/arnold-alarm/gateway.env`): `PA_ENABLED=1`, `PA_EXT=1010`, `PA_SPEAKER_IDS=…`, optional `TALK_CONSOLE_IP` whitelist.
 
 ## Protect (optional backup / custom clips)
 

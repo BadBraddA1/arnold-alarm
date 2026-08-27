@@ -1,9 +1,5 @@
-# Convenience PA (SIP → talkback)
+# Asterisk templates (optional)
 
-**Not for emergency.** Codes stay on Arnold Alarm / Protect.
+The gateway now answers SIP **1010** itself (`@vexyl.ai/sip`). These Asterisk configs are **optional** legacy templates if you prefer an external PBX → AudioSocket bridge.
 
-Asterisk templates for extension **1010** (AudioSocket → gateway on `127.0.0.1:9092`).
-
-Install: `TALK_CONSOLE_IP=<udm-ip> bash ../scripts/install-pa.sh`
-
-See repo README section **Convenience PA**.
+Primary path: `PA_ENABLED=1` on the gateway — see repo README **Convenience PA**.
