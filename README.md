@@ -85,14 +85,22 @@ Emergency + bell clips use Protect **ringtones** (`PLAY_SPEAKER` on all speaker 
 | Code Green au | `6a3be77003a4b103e436e524` |
 | TEST ACOC | `6a3b089901a2b103e432add8` |
 
-**Speaker check** plays **Test_Start_Tone.mp3** on all AI speakers, then the Protect **TEST ACOC** ringtone. Clips live on the Pi under `~/.config/arnold-alarm/audio/`.
+**Speaker check** plays **Test_Start_Tone.mp3**, then **TEST_ACOC.ogg**, via talkback on all AI speakers. Clips live on the Pi under `~/.config/arnold-alarm/audio/`.
 
-**Class bells** (`bells.first` / `bells.second`) use local talkback sequences (not Protect ringtones):
+**Class bells** (`bells.first` / `bells.second`) use local talkback sequences:
 
 | Action | Behavior |
 |---|---|
 | First bell | `Start_Bell_Tone.mp3` on **Lobby + Fellowship** only |
-| Second bell | `Bell_1.mp3` on all speakers → wait 8s → `Bell_1.mp3` again |
+| Second bell | `Start_Bell_Tone.mp3` twice on all speakers (~1.5s gap) |
+
+**Emergency codes** also use talkback (Protect `PLAY_SPEAKER` ringtones were returning HTTP 200 with no audio):
+
+| Action | File | Loop |
+|---|---|---|
+| Code Red | `Code_Red_Full_Master.ogg` | until All clear (default) |
+| Code Blue | `Code_Blue_Master.ogg` | until All clear (default) |
+| All clear | `Code_Green_au.ogg` ×2 | no |
 
 **Convenience PA** plays `Test_Start_Tone.mp3` (`PA_PREAMBLE_FILE`) on the PA speakers before live talkback. Set `PA_PREAMBLE_FILE=off` to skip.
 
@@ -108,9 +116,9 @@ Sequence example (second bell):
 {
   "kind": "sequence",
   "steps": [
-    { "kind": "talkback", "file": "Bell_1.mp3", "speakerIds": ["…all…"] },
-    { "kind": "wait", "ms": 8000 },
-    { "kind": "talkback", "file": "Bell_1.mp3", "speakerIds": ["…all…"] }
+    { "kind": "talkback", "file": "Start_Bell_Tone.mp3", "speakerIds": ["…all…"] },
+    { "kind": "wait", "ms": 1500 },
+    { "kind": "talkback", "file": "Start_Bell_Tone.mp3", "speakerIds": ["…all…"] }
   ]
 }
 ```
@@ -130,8 +138,8 @@ Sequence example (second bell):
 ## Ops / safety notes
 
 - **Remote scope** is never implied by admin — grant sparingly in PIN admin.
-- **Mid-clip stop:** Protect **ringtones cannot be cut mid-play**. `Stop` only aborts **talkback** streams. All clear stops talkback (if any) then plays Code Green ×2. Accept for ringtone path; revisit only if we need talkback mid-stop again.
-- **Ringtone ID validation:** gateway checks the NVR ringtone list before play (bad IDs used to return HTTP 200 and silence).
+- **Mid-clip stop:** Talkback streams (bells, emergency codes, PA) stop on **Stop & All clear**. Legacy Protect ringtone plays cannot be cut mid-clip if still used somewhere.
+- **Ringtone ID validation:** gateway still checks NVR ringtone IDs when a ringtone ACTION is used; prefer talkback for campus clips.
 - **PWA:** Add to Home Screen on iPhone (Share → Add to Home Screen). Manifest + icons ship with the Worker assets.
 - **SIP PA (ext 9090):** convenience paging only — never a substitute for Code Red / Blue / All clear.
 

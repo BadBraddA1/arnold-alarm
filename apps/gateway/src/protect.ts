@@ -471,7 +471,11 @@ export async function triggerAction(def: ActionDef, options: PlayOptions = {}) {
     return;
   }
   if (def.kind === "ringtone") {
-    const repeat = options.loop ? 99 : (options.repeat ?? def.repeat ?? 1);
+    // Protect PLAY_SPEAKER often no-ops or misbehaves with huge repeatTimes.
+    // Real "loop until all clear" should use talkback; cap ringtone repeats.
+    const repeat = options.loop
+      ? Math.min(20, options.repeat ?? def.repeat ?? 10)
+      : (options.repeat ?? def.repeat ?? 1);
     await playRingtone(def.ringtoneId, repeat);
     return;
   }

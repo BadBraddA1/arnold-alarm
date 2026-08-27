@@ -639,7 +639,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
       actionId === "test.speakers" || actionId === "bells.test"
         ? "Playing now — start tone, then TEST ACOC on all speakers (walk the building)."
         : actionId === "bells.second"
-          ? "Playing now — Bell 1, 8 second pause, Bell 1 again (all speakers)."
+          ? "Playing now — start bell tone twice (all speakers)."
           : actionId === "bells.first"
             ? "Playing now — start bell tone (Lobby + Fellowship)."
             : loop
@@ -967,7 +967,7 @@ function renderBells() {
         <p class="muted" style="margin:0.5rem 0 0;font-size:0.85rem">Play now</p>
         ${actions.map((a) => `<button type="button" class="btn btn-primary btn-block" data-play="${escapeHtml(a.id)}">${escapeHtml(a.label)}</button>`).join("")}
         <div id="play-msg"></div>
-        <p class="muted" style="margin:0;font-size:0.8rem">First bell = start tone on Lobby + Fellowship. Second bell = Bell 1 twice with an 8s gap on all speakers.</p>
+        <p class="muted" style="margin:0;font-size:0.8rem">First bell = start tone on Lobby + Fellowship. Second bell = same start tone twice on all speakers.</p>
       </div>
     </main>`;
   tickClock();
