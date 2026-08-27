@@ -51,11 +51,21 @@ type SipDialog = {
   remoteUri?: string;
 };
 
-let stack: {
+type SipStackHandle = {
   start: () => Promise<void>;
   stop: () => Promise<void>;
   on: (event: string, fn: (...args: unknown[]) => void) => void;
-} | null = null;
+  call: (
+    uri: string,
+    options?: {
+      fromUri?: string;
+      payloadType?: number;
+      credentials?: { user: string; password: string; realm?: string };
+    },
+  ) => Promise<SipDialog>;
+};
+
+let stack: SipStackHandle | null = null;
 let activeCalls = 0;
 let listenPort = 5060;
 let extension = "9090";
@@ -228,6 +238,102 @@ function loadUnarmedPromptPcm(): Buffer {
 
 function loadGoodbyePcm(): Buffer {
   return loadAssetPcm("pa-sip-goodbye.pcm");
+}
+
+function loadTestNotifyPcm(): Buffer {
+  const fromEnv = process.env.TEST_NOTIFY_PROMPT;
+  if (fromEnv && existsSync(fromEnv)) return readFileSync(fromEnv);
+  const pcm = loadAssetPcm("pa-sip-test-notify.pcm");
+  return pcm.length ? pcm : loadTestPromptPcm();
+}
+
+function parseTestNotifyExts(): string[] {
+  const raw = (process.env.TEST_NOTIFY_EXTS || "").trim();
+  if (!raw) return [];
+  return [
+    ...new Set(
+      raw
+        .split(/[,;\s]+/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Before speaker check: ring configured desk phones and play a stand-by prompt.
+ * Failures are logged; speaker check still proceeds.
+ */
+export async function notifyDeskPhonesOfTest(): Promise<{
+  called: string[];
+  ok: string[];
+  failed: Array<{ ext: string; error: string }>;
+}> {
+  const exts = parseTestNotifyExts();
+  if (!exts.length) {
+    return { called: [], ok: [], failed: [] };
+  }
+  if (!stack) {
+    console.warn("[test-notify] SIP stack not ready — skipping desk phone calls");
+    return {
+      called: exts,
+      ok: [],
+      failed: exts.map((ext) => ({ ext, error: "sip_stack_unavailable" })),
+    };
+  }
+
+  const talkHost = (process.env.PA_TALK_HOST || "192.168.1.1").trim();
+  const talkUser = (process.env.PA_TALK_USER || "").trim();
+  const talkPass = (process.env.PA_TALK_PASS || "").trim();
+  const ringMs = Math.max(8_000, Number(process.env.TEST_NOTIFY_RING_MS || 25_000));
+  const pcm = loadTestNotifyPcm();
+  const ok: string[] = [];
+  const failed: Array<{ ext: string; error: string }> = [];
+
+  console.log(`[test-notify] calling ${exts.join(", ")} via ${talkHost}`);
+
+  await Promise.all(
+    exts.map(async (ext) => {
+      const uri = `sip:${ext}@${talkHost}`;
+      let dialog: SipDialog | null = null;
+      try {
+        const callP = stack!.call(uri, {
+          fromUri: talkUser ? `sip:${talkUser}@${talkHost}` : undefined,
+          payloadType: 0,
+          ...(talkUser && talkPass
+            ? { credentials: { user: talkUser, password: talkPass } }
+            : {}),
+        });
+        dialog = await Promise.race([
+          callP,
+          sleep(ringMs).then(() => {
+            throw new Error(`no answer within ${Math.round(ringMs / 1000)}s`);
+          }),
+        ]);
+        if (pcm.length && dialog.sendAudioPaced) {
+          await dialog.sendAudioPaced(pcm);
+        }
+        await dialog.bye?.();
+        ok.push(ext);
+        console.log(`[test-notify] ${ext} ok`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        failed.push({ ext, error: message });
+        console.warn(`[test-notify] ${ext} failed:`, message);
+        try {
+          await dialog?.bye?.();
+        } catch {
+          /* ignore */
+        }
+      }
+    }),
+  );
+
+  const settleMs = Math.max(0, Number(process.env.TEST_NOTIFY_SETTLE_MS || 1500));
+  if (settleMs) await sleep(settleMs);
+  return { called: exts, ok, failed };
 }
 
 function ivrApiUrl(): string {
@@ -679,11 +785,7 @@ export async function startPaAudioSocket(): Promise<void> {
   }
 
   const publicAddress = detectLanIp();
-  let SipStack: new (opts: Record<string, unknown>) => {
-    start: () => Promise<void>;
-    stop: () => Promise<void>;
-    on: (event: string, fn: (...args: unknown[]) => void) => void;
-  };
+  let SipStack: new (opts: Record<string, unknown>) => SipStackHandle;
   try {
     ({ SipStack } = require("@vexyl.ai/sip/stack"));
   } catch (err) {
@@ -700,13 +802,20 @@ export async function startPaAudioSocket(): Promise<void> {
     .map((s) => s.trim())
     .filter(Boolean);
 
+  const talkUser = (process.env.PA_TALK_USER || "").trim();
+  const talkPass = (process.env.PA_TALK_PASS || "").trim();
+
   const s = new SipStack({
     port: listenPort,
     address: "0.0.0.0",
     publicAddress,
     udp: true,
     tcp: true,
-    maxConcurrentCalls: 2,
+    maxConcurrentCalls: 4,
+    ringTimeLimit: Math.max(8_000, Number(process.env.TEST_NOTIFY_RING_MS || 25_000)),
+    ...(talkUser && talkPass
+      ? { credentials: { user: talkUser, password: talkPass } }
+      : {}),
     ...(allowedIps.length ? { allowedIps } : {}),
     logger: {
       error: (e: unknown) => console.error("[pa/sip]", e),
@@ -714,6 +823,7 @@ export async function startPaAudioSocket(): Promise<void> {
     },
   });
 
+  stack = s;
   s.on("invite", (...args: unknown[]) => {
     const dialog = args[0] as SipDialog;
 
@@ -788,6 +898,10 @@ export async function startPaAudioSocket(): Promise<void> {
   console.log(
     `[pa] SIP UA listening on udp/${listenPort} (PA ${extension}, test ${testExtension}, public ${publicAddress}) — convenience PA only`,
   );
+  const notifyExts = parseTestNotifyExts();
+  if (notifyExts.length) {
+    console.log(`[pa] speaker-check will notify desk phones: ${notifyExts.join(", ")}`);
+  }
 }
 
 export async function stopPaAudioSocket(): Promise<void> {

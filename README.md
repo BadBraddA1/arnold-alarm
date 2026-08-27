@@ -135,6 +135,7 @@ Sequence example (second bell):
 - **Stop & All clear** is green (Code Green ×2 only — not a direct Code Green play button).
 - **Admin** panel: arm/disarm, live speaker status (from Protect), volume profiles, speaker check, and staff PIN management.
 - **Volume profiles:** Admin can set **class bell volume per speaker** (plus a default for new horns). Emergency / all clear / speaker check / PA use the emergency level (default **100%**). Speakers restore to emergency level after each bell.
+- **Speaker check desk notify:** before TEST ACOC, the gateway dials `TEST_NOTIFY_EXTS` (e.g. `0023`) via UniFi Talk and plays a stand-by prompt. Add more extensions comma-separated in `gateway.env`.
 
 ## Ops / safety notes
 

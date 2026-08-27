@@ -778,7 +778,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
     await logAudit(actionId, "lan", "done", loop ? "loop" : undefined);
     const playingMsg =
       actionId === "test.speakers" || actionId === "bells.test"
-        ? "Playing now — start tone, then TEST ACOC on all speakers (walk the building)."
+        ? "Notifying desk phones, then start tone + TEST ACOC on all speakers."
         : actionId === "bells.second"
           ? "Playing now — start bell tone twice (all speakers)."
           : actionId === "bells.first"
@@ -1728,8 +1728,8 @@ async function renderAdmin() {
         </div>
         <div class="card stack" style="gap:0.55rem;padding:1rem 1.1rem">
           <p style="margin:0;font-weight:600">Speaker check</p>
-          <p class="muted" style="margin:0;font-size:0.85rem">Start tone, then <strong>TEST ACOC</strong> on every campus speaker while you walk the building.</p>
-          <button type="button" class="btn btn-ghost btn-block" id="admin-test-speakers" style="min-height:2.5rem">Speaker check — all speakers</button>
+          <p class="muted" style="margin:0;font-size:0.85rem">Rings desk phones with a stand-by warning, then start tone + <strong>TEST ACOC</strong> on every campus speaker.</p>
+          <button type="button" class="btn btn-ghost btn-block" id="admin-test-speakers" style="min-height:2.5rem">Speaker check — notify desks, then all speakers</button>
           <div id="admin-test-msg"></div>
         </div>
         <div>

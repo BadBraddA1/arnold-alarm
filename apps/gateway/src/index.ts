@@ -119,6 +119,22 @@ async function runAction(
   const repeat =
     options.repeat ??
     (def.kind === "talkback" && def.repeat ? def.repeat : undefined);
+  if (actionId === "test.speakers") {
+    try {
+      const { notifyDeskPhonesOfTest } = await import("./pa-sip.js");
+      const result = await notifyDeskPhonesOfTest();
+      if (result.called.length) {
+        console.log(
+          `[play] test notify ok=${result.ok.join(",") || "none"} failed=${result.failed.map((f) => f.ext).join(",") || "none"}`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        "[play] desk phone notify failed — continuing speaker check",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
   await withActionVolume(actionId, () =>
     triggerAction(def, { loop, repeat, actionId }),
   );
