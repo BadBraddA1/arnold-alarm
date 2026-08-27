@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # Enable convenience PA on the gateway: SIP dial PA_EXT (default 1010) → live talkback.
+# PA_TEST_EXT (default 1011) answers with a phone-only prompt (no speakers).
 # Built into the Node gateway (no Asterisk). NOT for emergency use.
 set -euo pipefail
 
 ENV_FILE="${HOME}/.config/arnold-alarm/gateway.env"
 PA_EXT="${PA_EXT:-1010}"
+PA_TEST_EXT="${PA_TEST_EXT:-1011}"
 TALK_IP="${TALK_CONSOLE_IP:-$(ip -4 route 2>/dev/null | awk '/default/ {print $3; exit}')}"
 SPEAKERS="${PA_SPEAKER_IDS:-}"
 
 echo "==> Arnold Alarm convenience PA"
-echo "    Dial ${PA_EXT} → gateway SIP → Protect talkback"
+echo "    Dial ${PA_EXT} → campus speakers (talkback)"
+echo "    Dial ${PA_TEST_EXT} → phone-only SIP test (no speakers)"
 echo "    This is NOT an emergency path."
 
 mkdir -p "$(dirname "$ENV_FILE")"
@@ -27,6 +30,7 @@ text = p.read_text() if p.exists() else ""
 updates = {
   "PA_ENABLED": "1",
   "PA_EXT": "$PA_EXT",
+  "PA_TEST_EXT": "$PA_TEST_EXT",
   "PA_SIP_PORT": "5060",
   "PA_SPEAKER_IDS": "$SPEAKERS",
   "PA_ACCEPT_ANY": "1",
@@ -70,5 +74,7 @@ sleep 2
 echo ""
 curl -s http://127.0.0.1:8787/health | python3 -c 'import sys,json; print(json.dumps(json.load(sys.stdin).get("pa"), indent=2))'
 echo ""
-echo "Softphone / Talk: dial ${PA_EXT} @ $(hostname -I | awk '{print $1}'):5060"
+LAN="$(hostname -I | awk '{print $1}')"
+echo "SIP test (safe):  dial ${PA_TEST_EXT} @ ${LAN}:5060  — prompt in ear, no speakers"
+echo "Live PA:           dial ${PA_EXT} @ ${LAN}:5060  — goes to campus speakers"
 echo "UniFi Talk: third-party SIP provider → Pi LAN IP, UDP 5060 (console IP hint: ${TALK_IP})"
