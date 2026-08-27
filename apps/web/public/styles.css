@@ -14,12 +14,9 @@
   --font-ui: "DM Sans", system-ui, sans-serif;
 }
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
-html,
-body {
+html, body {
   margin: 0;
   min-height: 100%;
   background:
@@ -30,15 +27,8 @@ body {
   font-family: var(--font-ui);
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-button,
-input {
-  font: inherit;
-}
+a { color: inherit; text-decoration: none; }
+button, input { font: inherit; }
 
 .app-shell {
   min-height: 100dvh;
@@ -63,15 +53,8 @@ input {
   font-weight: 600;
   letter-spacing: -0.02em;
 }
-
-.brand span {
-  color: var(--accent);
-}
-
-.muted {
-  color: var(--muted);
-  font-size: 0.9rem;
-}
+.brand span { color: var(--accent); }
+.muted { color: var(--muted); font-size: 0.9rem; }
 
 .card {
   background: color-mix(in oklab, var(--bg-elevated) 92%, transparent);
@@ -80,16 +63,8 @@ input {
   padding: 1.25rem;
 }
 
-.stack {
-  display: flex;
-  flex-direction: column;
-  gap: 0.85rem;
-}
-
-.tile-grid {
-  display: grid;
-  gap: 0.85rem;
-}
+.stack { display: flex; flex-direction: column; gap: 0.85rem; }
+.tile-grid { display: grid; gap: 0.85rem; }
 
 .tile {
   display: block;
@@ -97,25 +72,20 @@ input {
   border-radius: var(--radius);
   border: 1px solid var(--line);
   background: var(--bg-elevated);
-  transition: border-color 0.15s ease, transform 0.15s ease;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  color: inherit;
 }
-
 .tile:hover {
   border-color: color-mix(in oklab, var(--accent) 55%, var(--line));
-  transform: translateY(-1px);
 }
-
 .tile h2 {
   margin: 0 0 0.35rem;
   font-family: var(--font-display);
   font-size: 1.35rem;
 }
-
-.tile p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.92rem;
-}
+.tile p { margin: 0; color: var(--muted); font-size: 0.92rem; }
 
 .btn {
   appearance: none;
@@ -126,39 +96,17 @@ input {
   cursor: pointer;
   min-height: 3.25rem;
 }
-
-.btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.btn-primary {
-  background: var(--accent);
-  color: var(--accent-ink);
-}
-
-.btn-ghost {
-  background: transparent;
-  color: var(--muted);
-  border: 1px solid var(--line);
-}
-
-.btn-danger {
-  background: var(--danger);
-  color: var(--danger-ink);
-}
-
-.btn-block {
-  width: 100%;
-  font-size: 1.05rem;
-}
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: var(--accent-ink); }
+.btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.btn-danger { background: var(--danger); color: var(--danger-ink); }
+.btn-block { width: 100%; font-size: 1.05rem; }
 
 .pin-inputs {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
   gap: 0.5rem;
 }
-
 .pin-inputs input {
   width: 100%;
   aspect-ratio: 1;
@@ -170,7 +118,6 @@ input {
   background: #0c1015;
   color: var(--ink);
 }
-
 .pin-inputs input:focus {
   outline: 2px solid color-mix(in oklab, var(--accent) 70%, white);
   border-color: transparent;
@@ -183,25 +130,15 @@ input {
   font-size: 0.85rem;
   color: var(--muted);
 }
-
 .dot {
   width: 0.55rem;
   height: 0.55rem;
   border-radius: 50%;
   background: var(--muted);
 }
-
-.dot.ok {
-  background: var(--ok);
-}
-
-.dot.bad {
-  background: var(--danger);
-}
-
-.dot.warn {
-  background: var(--accent);
-}
+.dot.ok { background: var(--ok); }
+.dot.bad { background: var(--danger); }
+.dot.warn { background: var(--accent); }
 
 .error-banner {
   background: color-mix(in oklab, var(--danger) 18%, transparent);
@@ -211,7 +148,6 @@ input {
   padding: 0.85rem 1rem;
   font-size: 0.92rem;
 }
-
 .success-banner {
   background: color-mix(in oklab, var(--ok) 18%, transparent);
   border: 1px solid color-mix(in oklab, var(--ok) 45%, var(--line));
@@ -226,62 +162,55 @@ input {
   font-size: 1.75rem;
   margin: 0 0 0.35rem;
 }
-
 .back-link {
   color: var(--muted);
   font-size: 0.9rem;
   margin-bottom: 1rem;
   display: inline-block;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
 }
-
-.back-link:hover {
-  color: var(--ink);
-}
-
 .confirm-box {
   border: 1px solid color-mix(in oklab, var(--danger) 50%, var(--line));
   background: color-mix(in oklab, var(--danger) 10%, var(--bg-elevated));
   border-radius: var(--radius);
   padding: 1.25rem;
 }
-
-.table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.9rem;
-}
-
-.table th,
-.table td {
+.table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.table th, .table td {
   text-align: left;
   padding: 0.55rem 0.35rem;
   border-bottom: 1px solid var(--line);
 }
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.field input,
-.field select {
+.field { display: flex; flex-direction: column; gap: 0.35rem; }
+.field input {
   border-radius: 8px;
   border: 1px solid var(--line);
   background: #0c1015;
   color: var(--ink);
   padding: 0.65rem 0.75rem;
 }
-
 .checks {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
   font-size: 0.9rem;
 }
+.checks label { display: flex; align-items: center; gap: 0.35rem; }
 
-.checks label {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
+.clock-card {
+  text-align: center;
+  padding: 1.5rem 1rem 1.25rem;
+  background: linear-gradient(180deg, color-mix(in oklab, #243044 55%, transparent), var(--bg-elevated));
 }
+.clock-time {
+  font-family: var(--font-display);
+  font-size: clamp(2.75rem, 14vw, 4.25rem);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+.hidden { display: none !important; }

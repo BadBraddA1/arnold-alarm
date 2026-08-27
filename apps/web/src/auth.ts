@@ -2,23 +2,16 @@ import { SignJWT, jwtVerify } from "jose";
 import {
   PLAY_TOKEN_TTL_SEC,
   SESSION_MAX_AGE_SEC,
+  type Env,
   type Scope,
   type SessionPayload,
 } from "./types";
 
-function sessionSecret() {
-  const s = process.env.SESSION_SECRET;
-  if (!s) throw new Error("SESSION_SECRET is not set");
+function enc(s: string) {
   return new TextEncoder().encode(s);
 }
 
-function playSecret() {
-  const s = process.env.PLAY_JWT_SECRET;
-  if (!s) throw new Error("PLAY_JWT_SECRET is not set");
-  return new TextEncoder().encode(s);
-}
-
-export async function signSession(payload: SessionPayload): Promise<string> {
+export async function signSession(env: Env, payload: SessionPayload): Promise<string> {
   return new SignJWT({
     pinId: payload.pinId,
     label: payload.label,
@@ -27,29 +20,30 @@ export async function signSession(payload: SessionPayload): Promise<string> {
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime(`${SESSION_MAX_AGE_SEC}s`)
-    .sign(sessionSecret());
+    .sign(enc(env.SESSION_SECRET));
 }
 
-export async function verifySession(token: string): Promise<SessionPayload | null> {
+export async function verifySession(
+  env: Env,
+  token: string,
+): Promise<SessionPayload | null> {
   try {
-    const { payload } = await jwtVerify(token, sessionSecret());
-    const scopes = (payload.scopes as Scope[]) ?? [];
+    const { payload } = await jwtVerify(token, enc(env.SESSION_SECRET));
     if (!payload.pinId || !payload.label) return null;
     return {
       pinId: String(payload.pinId),
       label: String(payload.label),
-      scopes,
+      scopes: (payload.scopes as Scope[]) ?? [],
     };
   } catch {
     return null;
   }
 }
 
-export async function signPlayToken(input: {
-  pinId: string;
-  scopes: Scope[];
-  actionId: string;
-}): Promise<string> {
+export async function signPlayToken(
+  env: Env,
+  input: { pinId: string; scopes: Scope[]; actionId: string },
+): Promise<string> {
   return new SignJWT({
     pinId: input.pinId,
     scopes: input.scopes,
@@ -59,5 +53,5 @@ export async function signPlayToken(input: {
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime(`${PLAY_TOKEN_TTL_SEC}s`)
-    .sign(playSecret());
+    .sign(enc(env.PLAY_JWT_SECRET));
 }

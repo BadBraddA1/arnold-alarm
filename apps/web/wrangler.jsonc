@@ -1,0 +1,33 @@
+{
+  "name": "arnold-alarm",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-26",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "3b39955f13b1fc5364775d978622d3e1",
+  "workers_dev": true,
+  "preview_urls": true,
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "routes": [
+    {
+      "pattern": "alarm.arnoldcoc.org",
+      "custom_domain": true
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "arnold-alarm",
+      "database_id": "9a6ef7e9-027c-4a41-b666-4735d34763b0",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "GATEWAY_URL": "http://alarm-gw.local:8787",
+    "BELL_ACTIONS": "bells.period_start:Period start,bells.period_end:Period end,bells.chapel:Chapel",
+    "EVACUATE_ACTION": "evacuate.main:Building evacuation"
+  }
+}

@@ -1,6 +1,0 @@
-{
-  "buildCommand": "cd ../.. && pnpm install && pnpm --filter @arnold-alarm/web build",
-  "installCommand": "cd ../.. && pnpm install",
-  "framework": "nextjs",
-  "outputDirectory": ".next"
-}
