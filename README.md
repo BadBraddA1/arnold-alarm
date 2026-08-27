@@ -20,7 +20,7 @@ Pi    → UniFi Protect NVR → AI speakers
 - PINs live in **Cloudflare D1** (hashed). Sessions expire after **45 minutes** (or **30 minutes idle**) so a left-unlocked phone does not stay armed.
 - **Arm / disarm:** Admins can disarm the speaker system from Home. Staff can still send bells/codes while unarmed — commands are **held** (audit log) and speakers stay silent until an admin arms again. Default is armed.
 - Status distinguishes **queued on campus** vs **playing now**, and **Pi offline** vs **Protect unreachable**.
-- Home shows **last play** plus recent activity (Central time).
+- Home shows **last play** plus recent activity (Central time). PINs with only **bells** or only **evacuate** skip Home and open that panel directly (no activity log).
 
 ## Repo
 

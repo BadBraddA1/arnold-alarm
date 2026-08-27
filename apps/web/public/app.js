@@ -80,6 +80,10 @@ function setRoute(route) {
     render();
     return;
   }
+  if (route === "home") {
+    const solo = singlePanelRoute();
+    if (solo) route = solo;
+  }
   state.route = route;
   if (route !== "pin") state.message = null;
   render();
@@ -101,6 +105,30 @@ function escapeHtml(s) {
 
 function canRemotePlay() {
   return !!state.session?.scopes?.includes("remote");
+}
+
+/**
+ * If the PIN has only one panel role (bells or evacuate), skip Home/logs.
+ * Admin always gets Home. `remote` is not a panel.
+ */
+function singlePanelRoute(scopes = state.session?.scopes) {
+  const s = scopes || [];
+  if (s.includes("admin")) return null;
+  const bells = s.includes("bells");
+  const evac = s.includes("evacuate");
+  if (bells && !evac) return "bells";
+  if (evac && !bells) return "evacuate";
+  return null;
+}
+
+function routeAfterAuth() {
+  if (state.session?.mustChangePin) return "change-pin";
+  return singlePanelRoute() || "home";
+}
+
+function backToHomeLink() {
+  if (singlePanelRoute()) return "";
+  return `<button type="button" class="back-link" data-go="home">← Home</button>`;
 }
 
 function statusCopy() {
@@ -208,7 +236,7 @@ function wirePin() {
       return;
     }
     setSessionFromAuth(data);
-    setRoute(data.mustChangePin ? "change-pin" : "home");
+    setRoute(routeAfterAuth());
   }
 
   inputs.forEach((input, i) => {
@@ -280,7 +308,7 @@ function renderChangePin() {
     }
     setSessionFromAuth(data);
     state.message = { kind: "ok", text: "PIN saved. You’re ready to use Arnold Alarm." };
-    setRoute("home");
+    setRoute(routeAfterAuth());
   });
 }
 
@@ -897,7 +925,7 @@ function renderBells() {
   app.innerHTML = `
     <main class="app-shell">
       ${header(state.session.label)}
-      <button type="button" class="back-link" data-go="home">← Home</button>
+      ${backToHomeLink()}
       <div class="stack">
         ${clockHtml()}
         <div>
@@ -1051,7 +1079,7 @@ function renderEvacuate() {
   app.innerHTML = `
     <main class="app-shell evac-shell">
       ${header(state.session.label)}
-      <button type="button" class="back-link" data-go="home">← Home</button>
+      ${backToHomeLink()}
       <div class="stack evac-top">
         <div>
           <h1 class="page-title">Emergency codes</h1>
@@ -1146,7 +1174,7 @@ async function renderAdmin() {
   app.innerHTML = `
     <main class="app-shell">
       ${header(state.session.label)}
-      <button type="button" class="back-link" data-go="home">← Home</button>
+      ${backToHomeLink()}
       <div class="stack">
         <div>
           <h1 class="page-title">PIN admin</h1>
@@ -1250,6 +1278,13 @@ function render() {
     renderChangePin();
     return;
   }
+  // Safety net: never show Home chooser/logs for single-role PINs.
+  if (state.route === "home") {
+    const solo = singlePanelRoute();
+    if (solo) {
+      state.route = solo;
+    }
+  }
   if (state.route === "home") renderHome();
   else if (state.route === "bells") renderBells();
   else if (state.route === "evacuate") renderEvacuate();
@@ -1345,7 +1380,7 @@ async function boot() {
   const sess = await api("/api/auth/session");
   if (sess.res.ok && sess.data.authenticated) {
     setSessionFromAuth(sess.data);
-    state.route = sess.data.mustChangePin ? "change-pin" : "home";
+    state.route = routeAfterAuth();
   }
   render();
   void checkGateway();
