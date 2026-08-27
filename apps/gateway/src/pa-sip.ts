@@ -2,23 +2,46 @@
  * Convenience PA: answer SIP dial of extension (default 1010) and stream
  * caller audio live to Protect talkback. NOT for emergency codes.
  *
+ * Extension 1011 (PA_TEST_EXT): SIP-only loop — Pi speaks a prompt back to the
+ * phone; campus speakers stay silent. Use for Talk / softphone path checks.
+ *
  * Uses @vexyl.ai/sip (G.711 → PCM @ 8 kHz) so no Asterisk is required on Debian 13.
  */
 import { Readable } from "node:stream";
+import { readFileSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { networkInterfaces } from "node:os";
 import { createRequire } from "node:module";
 import { getPlaybackState, startLiveTalkback, stopTalkback } from "./talkback.js";
 
 const require = createRequire(import.meta.url);
+const here = dirname(fileURLToPath(import.meta.url));
 
 export type PaStatus = {
   enabled: boolean;
   listening: boolean;
   port: number;
   extension: string;
+  testExtension: string;
   active: boolean;
   calls: number;
   mode: "sip-ua" | "disabled";
+};
+
+type SipDialog = {
+  trying?: () => Promise<void>;
+  ringing?: () => Promise<void>;
+  accept: (opts?: { payloadType?: number }) => Promise<void>;
+  reject?: (code: number, reason: string) => Promise<void>;
+  bye?: () => Promise<void>;
+  sendAudioPaced?: (pcm: Buffer) => Promise<void>;
+  on: (ev: string, fn: (...a: unknown[]) => void) => void;
+  request?: {
+    uri?: string | { user?: string };
+    headers?: Record<string, unknown>;
+  };
+  remoteUri?: string;
 };
 
 let stack: {
@@ -29,6 +52,7 @@ let stack: {
 let activeCalls = 0;
 let listenPort = 5060;
 let extension = "1010";
+let testExtension = "1011";
 
 function detectLanIp(): string {
   const fromEnv = process.env.PA_PUBLIC_IP || process.env.PA_BIND_IP;
@@ -77,33 +101,36 @@ function parseSpeakerIds(): string[] {
   }
 }
 
-function calledMatchesExtension(dialog: {
-  remoteUri?: string;
-  request?: { uri?: string | { user?: string }; headers?: Record<string, unknown> };
-}): boolean {
-  const ext = extension;
+function extractCalledUser(dialog: SipDialog): string {
   const candidates: string[] = [];
   if (typeof dialog.remoteUri === "string") candidates.push(dialog.remoteUri);
   const uri = dialog.request?.uri;
   if (typeof uri === "string") candidates.push(uri);
   else if (uri && typeof uri === "object" && uri.user) candidates.push(String(uri.user));
-  // Also check To header if present on request
-  const to = dialog.request?.headers?.to as { uri?: { user?: string } } | undefined;
-  if (to?.uri?.user) candidates.push(String(to.uri.user));
+  const to = dialog.request?.headers?.to as
+    | { uri?: { user?: string } | string }
+    | string
+    | undefined;
+  if (typeof to === "string") candidates.push(to);
+  else if (to?.uri) {
+    if (typeof to.uri === "string") candidates.push(to.uri);
+    else if (to.uri.user) candidates.push(String(to.uri.user));
+  }
 
-  return candidates.some((c) => {
-    if (c === ext) return true;
-    if (c.includes(`:${ext}@`) || c.includes(`/${ext}@`)) return true;
-    if (c.startsWith(`${ext}@`)) return true;
+  for (const c of candidates) {
+    const digits = c.match(/(?:sip:)?(\d{3,15})\b/i);
+    if (digits?.[1]) return digits[1];
     try {
-      const u = new URL(c.includes(":") ? c.replace(/^sip:/i, "sip:") : `sip:${c}`);
-      return u.username === ext || u.pathname.replace(/^\//, "") === ext;
+      const normalized = c.includes(":") ? c.replace(/^sip:/i, "sip:") : `sip:${c}`;
+      const u = new URL(normalized);
+      if (u.username) return u.username;
+      const pathUser = u.pathname.replace(/^\//, "");
+      if (pathUser) return pathUser;
     } catch {
-      return c.includes(ext);
+      /* ignore */
     }
-  }) || candidates.length === 0;
-  // If we can't parse URI, accept (single-purpose PA box) — safer for Talk trunks
-  // that dial via trunk without user=1010 in obvious place.
+  }
+  return "";
 }
 
 function isPaEnabled() {
@@ -133,16 +160,147 @@ async function isSystemArmed(): Promise<boolean> {
   }
 }
 
+function loadTestPromptPcm(): Buffer {
+  const candidates = [
+    process.env.PA_TEST_PROMPT,
+    join(here, "..", "assets", "pa-sip-test.pcm"),
+    join(process.cwd(), "assets", "pa-sip-test.pcm"),
+    join(process.env.HOME || "", ".config/arnold-alarm/audio/pa-sip-test.pcm"),
+  ].filter(Boolean) as string[];
+
+  for (const path of candidates) {
+    if (existsSync(path)) return readFileSync(path);
+  }
+
+  // Fallback: 880 Hz beep ×3 (8 kHz s16le mono) if asset missing
+  const sr = 8000;
+  const toneMs = 250;
+  const gapMs = 150;
+  const chunks: Buffer[] = [];
+  for (let i = 0; i < 3; i++) {
+    const n = Math.floor((sr * toneMs) / 1000);
+    const tone = Buffer.alloc(n * 2);
+    for (let s = 0; s < n; s++) {
+      const v = Math.sin((2 * Math.PI * 880 * s) / sr) * 0.35 * 32767;
+      tone.writeInt16LE(Math.max(-32767, Math.min(32767, Math.round(v))), s * 2);
+    }
+    chunks.push(tone);
+    chunks.push(Buffer.alloc(Math.floor((sr * gapMs) / 1000) * 2));
+  }
+  return Buffer.concat(chunks);
+}
+
 export function getPaStatus(): PaStatus {
   return {
     enabled: isPaEnabled(),
     listening: Boolean(stack),
     port: listenPort,
     extension,
+    testExtension,
     active: activeCalls > 0 || getPlaybackState().actionId === "pa.live",
     calls: activeCalls,
     mode: stack ? "sip-ua" : "disabled",
   };
+}
+
+async function handleSipTest(dialog: SipDialog): Promise<void> {
+  await dialog.trying?.();
+  await dialog.ringing?.();
+  await dialog.accept({ payloadType: 0 }); // PCMU
+  activeCalls += 1;
+  console.log(`[pa] SIP test ${testExtension} — prompt to phone only (no speakers)`);
+
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    activeCalls = Math.max(0, activeCalls - 1);
+    console.log("[pa] SIP test call ended");
+  };
+  dialog.on("end", cleanup);
+  dialog.on("error", (err: unknown) => {
+    console.error("[pa] SIP test dialog error", err);
+    cleanup();
+  });
+
+  try {
+    const pcm = loadTestPromptPcm();
+    if (dialog.sendAudioPaced) {
+      await dialog.sendAudioPaced(pcm);
+    } else {
+      console.warn("[pa] sendAudioPaced missing — hang up without prompt");
+    }
+  } catch (err) {
+    console.error("[pa] failed to play SIP test prompt", err);
+  }
+
+  try {
+    await dialog.bye?.();
+  } catch {
+    /* ignore */
+  }
+  cleanup();
+}
+
+async function handlePaLive(dialog: SipDialog, speakerIds: string[]): Promise<void> {
+  if (!speakerIds.length) {
+    console.log("[pa] rejecting PA — no speaker IDs configured");
+    await dialog.reject?.(503, "Service Unavailable");
+    return;
+  }
+
+  if (!(await isSystemArmed())) {
+    console.log("[pa] rejecting PA call — system unarmed");
+    await dialog.reject?.(480, "Temporarily Unavailable");
+    return;
+  }
+
+  await dialog.trying?.();
+  await dialog.ringing?.();
+  await dialog.accept({ payloadType: 0 }); // PCMU
+
+  activeCalls += 1;
+  console.log(
+    `[pa] live talkback started (ext ${extension}) → ${speakerIds.length} speakers`,
+  );
+
+  const pcm = new Readable({
+    read() {
+      /* push-driven */
+    },
+  });
+
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    activeCalls = Math.max(0, activeCalls - 1);
+    try {
+      pcm.push(null);
+    } catch {
+      /* ignore */
+    }
+    stopTalkback();
+    console.log("[pa] call ended — talkback stopped");
+  };
+
+  dialog.on("audio", (...a: unknown[]) => {
+    const buf = a[0];
+    if (Buffer.isBuffer(buf)) pcm.push(buf);
+    else if (buf instanceof Uint8Array) pcm.push(Buffer.from(buf));
+  });
+  dialog.on("end", cleanup);
+  dialog.on("error", (err: unknown) => {
+    console.error("[pa] dialog error", err);
+    cleanup();
+  });
+
+  await startLiveTalkback({
+    actionId: "pa.live",
+    speakerIds,
+    pcmReadable: pcm,
+    pcmSampleRate: 8000,
+  });
 }
 
 export async function startPaAudioSocket(): Promise<void> {
@@ -153,16 +311,16 @@ export async function startPaAudioSocket(): Promise<void> {
   }
 
   extension = process.env.PA_EXT || process.env.PA_EXTENSION || "1010";
+  testExtension = process.env.PA_TEST_EXT || "1011";
   listenPort = Number(process.env.PA_SIP_PORT || process.env.PA_AUDIOSOCKET_PORT || 5060);
   // If someone left AudioSocket port 9092, prefer real SIP 5060
   if (listenPort === 9092) listenPort = 5060;
 
   const speakerIds = parseSpeakerIds();
   if (!speakerIds.length) {
-    console.error(
-      "[pa] no PA_SPEAKER_IDS (or talkback/testSound speakerIds in ACTIONS) — PA disabled",
+    console.warn(
+      "[pa] no PA_SPEAKER_IDS — live PA (1010) disabled; SIP test ext still available",
     );
-    return;
   }
 
   const publicAddress = detectLanIp();
@@ -202,83 +360,37 @@ export async function startPaAudioSocket(): Promise<void> {
   });
 
   s.on("invite", (...args: unknown[]) => {
-    const dialog = args[0] as {
-      trying?: () => Promise<void>;
-      ringing?: () => Promise<void>;
-      accept: (opts?: { payloadType?: number }) => Promise<void>;
-      reject?: (code: number, reason: string) => Promise<void>;
-      bye?: () => Promise<void>;
-      on: (ev: string, fn: (...a: unknown[]) => void) => void;
-      request?: {
-        uri?: string | { user?: string };
-        headers?: Record<string, unknown>;
-      };
-      remoteUri?: string;
-    };
+    const dialog = args[0] as SipDialog;
 
     void (async () => {
       try {
-        // Prefer matching 1010; if Talk only sends trunk digits, still accept when PA_ACCEPT_ANY=1
+        const called = extractCalledUser(dialog);
         const acceptAny =
           process.env.PA_ACCEPT_ANY !== "0" && process.env.PA_ACCEPT_ANY !== "false";
-        if (!acceptAny && !calledMatchesExtension(dialog)) {
-          console.log(`[pa] rejecting call (want ext ${extension})`);
+
+        const isTest =
+          called === testExtension ||
+          called.endsWith(testExtension) ||
+          called.includes(testExtension);
+
+        if (isTest) {
+          await handleSipTest(dialog);
+          return;
+        }
+
+        const isPa =
+          called === extension ||
+          called.endsWith(extension) ||
+          (!called && acceptAny) ||
+          (acceptAny && !isTest);
+
+        if (!isPa) {
+          console.log(`[pa] rejecting call (got "${called}", want ${extension} or ${testExtension})`);
           await dialog.reject?.(404, "Not Found");
           return;
         }
 
-        if (!(await isSystemArmed())) {
-          console.log("[pa] rejecting call — system unarmed");
-          await dialog.reject?.(480, "Temporarily Unavailable");
-          return;
-        }
-
-        await dialog.trying?.();
-        await dialog.ringing?.();
-        await dialog.accept({ payloadType: 0 }); // PCMU
-
-        activeCalls += 1;
-        console.log(
-          `[pa] live talkback started (ext ${extension}) → ${speakerIds.length} speakers`,
-        );
-
-        const pcm = new Readable({
-          read() {
-            /* push-driven */
-          },
-        });
-
-        let cleaned = false;
-        const cleanup = () => {
-          if (cleaned) return;
-          cleaned = true;
-          activeCalls = Math.max(0, activeCalls - 1);
-          try {
-            pcm.push(null);
-          } catch {
-            /* ignore */
-          }
-          stopTalkback();
-          console.log("[pa] call ended — talkback stopped");
-        };
-
-        dialog.on("audio", (...a: unknown[]) => {
-          const buf = a[0];
-          if (Buffer.isBuffer(buf)) pcm.push(buf);
-          else if (buf instanceof Uint8Array) pcm.push(Buffer.from(buf));
-        });
-        dialog.on("end", cleanup);
-        dialog.on("error", (err: unknown) => {
-          console.error("[pa] dialog error", err);
-          cleanup();
-        });
-
-        await startLiveTalkback({
-          actionId: "pa.live",
-          speakerIds,
-          pcmReadable: pcm,
-          pcmSampleRate: 8000,
-        });
+        await handlePaLive(dialog, speakerIds);
       } catch (err) {
         console.error("[pa] invite handler failed", err);
         try {
@@ -294,7 +406,7 @@ export async function startPaAudioSocket(): Promise<void> {
   await s.start();
   stack = s;
   console.log(
-    `[pa] SIP UA listening on udp/${listenPort} (ext ${extension}, public ${publicAddress}) — convenience PA only`,
+    `[pa] SIP UA listening on udp/${listenPort} (PA ${extension}, test ${testExtension}, public ${publicAddress}) — convenience PA only`,
   );
 }
 

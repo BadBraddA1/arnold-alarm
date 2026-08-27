@@ -124,10 +124,11 @@ No need to re-test speakers for UI work. When the building is empty, re-verify o
 
 ## Convenience PA (SIP dial-in — not emergency)
 
-Office dials **1010**; the gateway answers SIP and streams live audio to campus AI Speakers via Protect talkback. **Do not use for lockdown / evacuate.**
+Office dials **1010** → live PA on campus speakers. Dial **1011** → SIP test only (Pi speaks a short prompt back to your phone; **speakers stay silent**). **Do not use for lockdown / evacuate.**
 
 ```
-Talk / softphone → sip:1010@alarm-gw (UDP 5060) → gateway → Protect talkback → speakers
+Talk / softphone → sip:1010@alarm-gw → Protect talkback → speakers
+Talk / softphone → sip:1011@alarm-gw → prompt in earpiece only (no speakers)
 ```
 
 Built into the Node gateway (`@vexyl.ai/sip`) — no Asterisk required.
@@ -144,18 +145,20 @@ Confirm:
 
 ```bash
 curl -s http://127.0.0.1:8787/health | jq .pa
-# enabled, listening, extension 1010, mode sip-ua
+# enabled, listening, extension 1010, testExtension 1011, mode sip-ua
 ```
 
-**Softphone test:** register or dial `sip:1010@192.168.1.204` (Pi LAN), speak, hang up.
+**Softphone test (safe):** dial `sip:1011@192.168.1.204` — hear the prompt, hang up. Speakers should stay quiet.
+
+**Softphone PA:** dial `sip:1010@192.168.1.204` — speak, hang up (plays on campus speakers).
 
 ### UniFi Talk wiring
 
-1. Talk → Settings → **Third-Party SIP Provider** → Custom → Pi LAN IP, UDP **5060**.
-2. Route short code / number **1010** to that trunk (UI varies by Talk version).
-3. Test from a desk phone: dial 1010 → speak on campus speakers → hang up.
+1. Talk → Settings → **Third-Party SIP Provider** → Custom → Pi LAN IP, UDP **5060**, **Register = No**.
+2. Add phone numbers **1010** (PA) and **1011** (SIP test) on that trunk.
+3. Test **1011** first from a desk phone (prompt in ear only), then **1010** for live PA.
 
-Env (`~/.config/arnold-alarm/gateway.env`): `PA_ENABLED=1`, `PA_EXT=1010`, `PA_SPEAKER_IDS=…`, optional `TALK_CONSOLE_IP` whitelist.
+Env (`~/.config/arnold-alarm/gateway.env`): `PA_ENABLED=1`, `PA_EXT=1010`, `PA_TEST_EXT=1011`, `PA_SPEAKER_IDS=…`, optional `TALK_CONSOLE_IP` whitelist.
 
 ## Protect (optional backup / custom clips)
 
