@@ -1281,29 +1281,30 @@ function startLocalPhoneAlarm(tone = "red") {
 
 /**
  * 10s arming countdown: phone alarms locally; Send now / Cancel / auto-fire at 0.
+ * Takes over the Emergency page (no scroll) so Send now stays in the thumb zone.
  */
 function startEvacArmCountdown({ actionId, label, tone, onFire }) {
   stopLocalPhoneAlarm();
   const TOTAL = 10;
   let remaining = TOTAL;
   let finished = false;
+  const shell = $(".evac-shell");
   const box = $("#evac-confirm");
   if (!box) return;
 
   const paint = () => {
     box.innerHTML = `
-      <div class="confirm-box confirm-box--${tone} stack confirm-safe evac-countdown">
-        <p class="evac-countdown-label" style="margin:0;text-align:center;font-weight:600">
-          Arming <strong>${escapeHtml(label)}</strong>
-        </p>
-        <div class="evac-countdown-num" id="evac-count-num" aria-live="polite">${remaining}</div>
-        <p class="evac-meta" style="margin:0;text-align:center">
-          This phone is alarming. Campus speakers stay silent until it sends.
-          Auto-sends in <strong id="evac-count-sec">${remaining}</strong>s — or send now / cancel.
-        </p>
-        <div class="evac-countdown-bar" aria-hidden="true"><span style="transform:scaleX(${(TOTAL - remaining) / TOTAL})"></span></div>
-        <button type="button" class="btn btn-code-${tone} btn-block" id="evac-send-now">Send now</button>
-        <button type="button" class="btn btn-ghost btn-block" data-cancel-evac>Cancel</button>
+      <div class="confirm-box confirm-box--${tone} confirm-safe evac-countdown" role="alertdialog" aria-labelledby="evac-count-heading">
+        <div class="evac-countdown-head">
+          <p class="evac-countdown-label" id="evac-count-heading">Arming ${escapeHtml(label)}</p>
+          <div class="evac-countdown-num" id="evac-count-num" aria-live="polite">${remaining}</div>
+          <p class="evac-countdown-hint">Campus silent until send · auto in <strong id="evac-count-sec">${remaining}</strong>s</p>
+          <div class="evac-countdown-bar" aria-hidden="true"><span style="transform:scaleX(${(TOTAL - remaining) / TOTAL})"></span></div>
+        </div>
+        <div class="evac-countdown-actions">
+          <button type="button" class="btn btn-code-${tone} btn-block" id="evac-send-now">Send now</button>
+          <button type="button" class="btn btn-ghost btn-block" data-cancel-evac>Cancel</button>
+        </div>
       </div>`;
   };
 
@@ -1311,13 +1312,14 @@ function startEvacArmCountdown({ actionId, label, tone, onFire }) {
     if (finished) return;
     finished = true;
     stopLocalPhoneAlarm();
+    shell?.classList.remove("is-arming");
     box.innerHTML = "";
     if (send) onFire();
   };
 
+  shell?.classList.add("is-arming");
   paint();
   startLocalPhoneAlarm(tone);
-  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
 
   $("#evac-send-now")?.addEventListener("click", () => finish(true));
   $("[data-cancel-evac]")?.addEventListener("click", () => finish(false));
@@ -1356,29 +1358,24 @@ function renderEvacuate() {
   const clearOpen = phase === "red" || phase === "blue";
   const phaseHint =
     phase === "red"
-      ? "Code Red is active — issue All clear when safe. Another Red/Blue is locked."
+      ? "Code Red active — All clear when safe."
       : phase === "blue"
-        ? "Code Blue is active — issue All clear when safe. Another Red/Blue is locked."
-        : "Issue Code Red or Blue first. All clear stays locked until a code is active.";
+        ? "Code Blue active — All clear when safe."
+        : "10s phone alarm before campus speakers.";
 
   app.innerHTML = `
     <main class="app-shell evac-shell">
       ${header(state.session.label)}
       ${backToHomeLink()}
-      <div class="stack evac-top">
-        <div>
-          <h1 class="page-title">Emergency codes</h1>
-          <p class="evac-meta">
-            ${playHint()} Red / Blue: 10s phone alarm, then auto-send (or Send now / Cancel). All clear: hold to confirm.
-          </p>
-          <p class="evac-meta" style="margin-top:0.35rem">${escapeHtml(phaseHint)}</p>
-        </div>
-        <label class="checks" style="margin:0">
-          <input type="checkbox" id="evac-loop" checked /> Loop until all clear (default for Code Red / Blue)
+      <div class="evac-idle">
+        <h1 class="page-title evac-title">Emergency</h1>
+        <p class="evac-meta">${escapeHtml(phaseHint)}</p>
+        <label class="checks evac-loop">
+          <input type="checkbox" id="evac-loop" checked /> Loop until all clear
         </label>
-        <div id="evac-confirm"></div>
-        <div id="play-msg"></div>
       </div>
+      <div id="evac-confirm" class="evac-stage"></div>
+      <div id="play-msg"></div>
       <div class="evac-thumb-zone">
         <div class="evac-codes">
           ${ordered
@@ -1395,7 +1392,7 @@ function renderEvacuate() {
         <div class="evac-all-clear">
           <button type="button" class="btn btn-code-green btn-block btn-evac" id="evac-all-clear" ${clearOpen ? "" : "disabled aria-disabled=\"true\""}>
             <span>Stop &amp; All clear</span>
-            <span class="btn-evac-sub">${clearOpen ? "Start tone + Code Green ×2" : "Locked until Red or Blue"}</span>
+            <span class="btn-evac-sub">${clearOpen ? "Hold to confirm" : "Locked until Red or Blue"}</span>
           </button>
         </div>
       </div>
@@ -1423,23 +1420,31 @@ function renderEvacuate() {
 
   $("#evac-all-clear")?.addEventListener("click", () => {
     if (!clearOpen) return;
+    const shell = $(".evac-shell");
+    shell?.classList.add("is-arming");
     $("#evac-confirm").innerHTML = `
-      <div class="confirm-box confirm-box--green stack confirm-safe">
-        <button type="button" class="btn btn-ghost btn-block" data-cancel-evac>Cancel</button>
-        <p style="margin:0;text-align:center">Issue <strong>All clear</strong>? Start tone, then Code Green <strong>twice</strong>. Ends the active code.</p>
-        <button type="button" class="btn btn-code-green btn-block btn-hold" id="confirm-all-clear" aria-label="Hold to confirm all clear">
-          <span class="btn-hold-fill"></span>
-          <span class="btn-hold-label">Hold to confirm all clear</span>
-        </button>
+      <div class="confirm-box confirm-box--green confirm-safe evac-countdown" role="alertdialog">
+        <div class="evac-countdown-head">
+          <p class="evac-countdown-label">All clear</p>
+          <p class="evac-countdown-hint">Start tone + Code Green ×2. Ends the active code.</p>
+        </div>
+        <div class="evac-countdown-actions">
+          <button type="button" class="btn btn-code-green btn-block btn-hold" id="confirm-all-clear" aria-label="Hold to confirm all clear">
+            <span class="btn-hold-fill"></span>
+            <span class="btn-hold-label">Hold to confirm</span>
+          </button>
+          <button type="button" class="btn btn-ghost btn-block" data-cancel-evac>Cancel</button>
+        </div>
       </div>`;
     wireHoldConfirm($("#confirm-all-clear"), () => {
+      shell?.classList.remove("is-arming");
       $("#evac-confirm").innerHTML = "";
       void stopAndAllClear($("#play-msg"));
     });
     $("[data-cancel-evac]")?.addEventListener("click", () => {
+      shell?.classList.remove("is-arming");
       $("#evac-confirm").innerHTML = "";
     });
-    $("#evac-confirm")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   });
 }
 

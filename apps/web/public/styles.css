@@ -416,17 +416,79 @@ button, input { font: inherit; }
 }
 
 .evac-shell {
-  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
+  overflow: hidden;
 }
-.evac-top {
-  flex: 1;
+.evac-idle {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+}
+.evac-title {
+  margin: 0;
+  font-size: 1.35rem;
+}
+.evac-loop {
+  margin: 0;
+  font-size: 0.9rem;
+}
+.evac-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.evac-stage:empty {
+  display: none;
 }
 .evac-thumb-zone {
   position: sticky;
   bottom: 0;
-  margin-top: 1.25rem;
-  padding: 1rem 0 calc(0.5rem + env(safe-area-inset-bottom));
-  background: linear-gradient(180deg, transparent, var(--bg) 28%);
+  margin-top: auto;
+  padding: 0.75rem 0 calc(0.35rem + env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, transparent, var(--bg) 22%);
+}
+.evac-shell.is-arming .evac-idle,
+.evac-shell.is-arming .evac-thumb-zone,
+.evac-shell.is-arming .back-link {
+  display: none;
+}
+.evac-shell.is-arming {
+  padding-top: 0.75rem;
+  padding-bottom: 0.5rem;
+}
+.evac-shell.is-arming .app-header {
+  margin-bottom: 0.65rem;
+}
+.evac-shell.is-arming .evac-stage {
+  flex: 1;
+  display: flex;
+}
+.evac-countdown {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 0;
+  padding: 0.85rem 1rem 1rem;
+}
+.evac-countdown-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.45rem;
+  text-align: center;
+}
+.evac-countdown-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-bottom: env(safe-area-inset-bottom);
 }
 .confirm-safe {
   gap: 0.75rem;
@@ -455,9 +517,19 @@ button, input { font: inherit; }
   filter: brightness(1.05);
 }
 
-
+.evac-countdown-label {
+  margin: 0;
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+.evac-countdown-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  max-width: 22rem;
+}
 .evac-countdown-num {
-  font-size: clamp(3rem, 14vw, 4.5rem);
+  font-size: clamp(2.75rem, 12vw, 4rem);
   font-weight: 800;
   line-height: 1;
   text-align: center;
@@ -465,7 +537,9 @@ button, input { font: inherit; }
   letter-spacing: -0.04em;
 }
 .evac-countdown-bar {
-  height: 0.45rem;
+  width: 100%;
+  max-width: 16rem;
+  height: 0.4rem;
   border-radius: 999px;
   background: color-mix(in oklab, var(--line) 80%, transparent);
   overflow: hidden;
