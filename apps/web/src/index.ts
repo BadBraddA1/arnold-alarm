@@ -8,10 +8,13 @@ import {
   clearRateLimit,
   enqueuePlay,
   finishJob,
+  insertAudit,
   insertPin,
   listActivePins,
   listAllPins,
+  listAudit,
   setPinActive,
+  updateAuditStatus,
   updatePinScopes,
 } from "./db";
 import {
@@ -67,13 +70,18 @@ app.use("*", async (c, next) => {
 });
 
 app.get("/api/config", (c) => {
+  const evacuateActions = parseActionList(c.env.EVACUATE_ACTIONS);
   return c.json({
     gatewayUrl: c.env.GATEWAY_URL,
     bellActions: parseActionList(c.env.BELL_ACTIONS),
-    evacuateAction: parseActionList(c.env.EVACUATE_ACTION)[0] ?? {
-      id: "evacuate.main",
-      label: "Building evacuation",
-    },
+    evacuateActions:
+      evacuateActions.length > 0
+        ? evacuateActions
+        : [
+            { id: "evacuate.code_red", label: "Code Red — Evacuate" },
+            { id: "evacuate.code_blue", label: "Code Blue — Lockdown" },
+            { id: "evacuate.code_green", label: "Code Green — All clear" },
+          ],
   });
 });
 
@@ -190,6 +198,15 @@ app.post("/api/play-remote", async (c) => {
     label: session.label,
     delayMinutes,
   });
+  await insertAudit(c.env, {
+    id,
+    actionId,
+    label: session.label,
+    pinId: session.pinId,
+    mode: "remote",
+    status: delayMinutes > 0 ? "scheduled" : "queued",
+    detail: delayMinutes > 0 ? `delay ${delayMinutes}m` : undefined,
+  });
   return c.json({
     ok: true,
     id,
@@ -226,7 +243,57 @@ app.post("/api/gateway/ack", async (c) => {
     return c.json({ error: "id and ok required" }, 400);
   }
   await finishJob(c.env, body.id, body.ok, body.error);
+  await updateAuditStatus(
+    c.env,
+    body.id,
+    body.ok ? "done" : "error",
+    body.error,
+  );
   return c.json({ ok: true });
+});
+
+app.get("/api/audit", async (c) => {
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  const rows = await listAudit(c.env, 75);
+  return c.json({
+    events: rows.map((r) => ({
+      id: r.id,
+      actionId: r.action_id,
+      label: r.label,
+      mode: r.mode,
+      status: r.status,
+      detail: r.detail,
+      createdAt: r.created_at,
+    })),
+  });
+});
+
+app.post("/api/audit", async (c) => {
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    actionId?: string;
+    mode?: string;
+    status?: string;
+    detail?: string;
+  };
+  const actionId = body.actionId?.trim();
+  if (!actionId) return c.json({ error: "actionId required" }, 400);
+  if (!actionAllowed(actionId, session.scopes)) {
+    return c.json({ error: "Not allowed for this PIN." }, 403);
+  }
+  const id = crypto.randomUUID();
+  await insertAudit(c.env, {
+    id,
+    actionId,
+    label: session.label,
+    pinId: session.pinId,
+    mode: body.mode === "remote" ? "remote" : "lan",
+    status: body.status || "done",
+    detail: body.detail,
+  });
+  return c.json({ ok: true, id });
 });
 
 app.get("/api/admin/pins", async (c) => {

@@ -143,12 +143,50 @@ function renderHome() {
         </div>
         <div class="tile-grid">
           ${canBells ? `<button type="button" class="tile" data-go="bells"><h2>Class bells</h2><p>Play period and chapel tones on campus speakers.</p></button>` : ""}
-          ${canEvac ? `<button type="button" class="tile" data-go="evacuate"><h2>Evacuation</h2><p>Trigger the building evacuation message.</p></button>` : ""}
+          ${canEvac ? `<button type="button" class="tile" data-go="evacuate"><h2>Emergency codes</h2><p>Code Red, Blue, and Green announcements.</p></button>` : ""}
           ${canAdmin ? `<button type="button" class="tile" data-go="admin"><h2>PIN admin</h2><p>Add or revoke staff PINs.</p></button>` : ""}
+        </div>
+        <div class="card stack">
+          <p style="margin:0;font-weight:600">Recent activity</p>
+          <p class="muted" style="margin:0;font-size:0.85rem">Who activated what, and when (Central).</p>
+          <div id="audit-list" class="muted">Loading…</div>
         </div>
         ${banner()}
       </div>
     </main>`;
+  void loadAudit();
+}
+
+async function loadAudit() {
+  const el = $("#audit-list");
+  if (!el) return;
+  const { res, data } = await api("/api/audit");
+  if (!res.ok) {
+    el.textContent = "Could not load activity.";
+    return;
+  }
+  const events = data.events || [];
+  if (!events.length) {
+    el.textContent = "No activations yet.";
+    return;
+  }
+  el.innerHTML = `
+    <table class="table">
+      <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Status</th></tr></thead>
+      <tbody>
+        ${events
+          .slice(0, 40)
+          .map(
+            (e) => `<tr>
+            <td style="white-space:nowrap">${escapeHtml(formatCentral(e.createdAt))}</td>
+            <td>${escapeHtml(e.label)}</td>
+            <td>${escapeHtml(actionLabel(e.actionId))}<div class="muted" style="font-size:0.75rem">${escapeHtml(e.mode)}${e.detail ? " · " + escapeHtml(e.detail) : ""}</div></td>
+            <td>${escapeHtml(e.status)}</td>
+          </tr>`,
+          )
+          .join("")}
+      </tbody>
+    </table>`;
 }
 
 function clockHtml() {
@@ -181,6 +219,41 @@ function tickClock() {
   if (d) d.textContent = `${date} · Central`;
 }
 
+async function logAudit(actionId, mode, status, detail) {
+  try {
+    await api("/api/audit", {
+      method: "POST",
+      body: JSON.stringify({ actionId, mode, status, detail }),
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+function actionLabel(actionId) {
+  const bells = state.config?.bellActions || [];
+  const evacs = state.config?.evacuateActions || [];
+  const hit = [...bells, ...evacs].find((a) => a.id === actionId);
+  return hit?.label || actionId;
+}
+
+function formatCentral(iso) {
+  try {
+    const d = new Date(iso.includes("T") || iso.includes("Z") ? iso : iso + "Z");
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: TZ,
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    }).format(d);
+  } catch {
+    return iso;
+  }
+}
+
 async function playAction(actionId, msgEl, delayMinutes = 0) {
   msgEl.innerHTML = "";
   const canRemote = state.session?.scopes?.includes("remote");
@@ -199,7 +272,6 @@ async function playAction(actionId, msgEl, delayMinutes = 0) {
   }
 
   if (delayMinutes > 0) {
-    // LAN schedule path
     const { res, data } = await api("/api/play-token", {
       method: "POST",
       body: JSON.stringify({ actionId }),
@@ -219,6 +291,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0) {
         msgEl.innerHTML = `<div class="error-banner">${escapeHtml(schedData.error || "Schedule failed.")}</div>`;
         return;
       }
+      await logAudit(actionId, "lan", "scheduled", `delay ${delayMinutes}m`);
       msgEl.innerHTML = `<div class="success-banner">Scheduled in ${delayMinutes} min on campus gateway.</div>`;
     } catch {
       msgEl.innerHTML = `<div class="error-banner">Cannot reach the alarm gateway. Join church Wi‑Fi, or ask an admin for remote play access.</div>`;
@@ -249,6 +322,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0) {
       msgEl.innerHTML = `<div class="error-banner">${escapeHtml(playData.error || `Gateway error (${playRes.status})`)}</div>`;
       return;
     }
+    await logAudit(actionId, "lan", "done");
     msgEl.innerHTML = `<div class="success-banner">Sent to speakers.</div>`;
   } catch {
     msgEl.innerHTML = `<div class="error-banner">Cannot reach the alarm gateway. Join the church Wi‑Fi network and try again — or ask an admin for remote play access.</div>`;
@@ -338,36 +412,58 @@ function renderBells() {
 }
 
 function renderEvacuate() {
-  const action = state.config?.evacuateAction || {
-    id: "evacuate.main",
-    label: "Play evacuation",
-  };
+  const actions = state.config?.evacuateActions || [
+    { id: "evacuate.code_red", label: "Code Red — Evacuate" },
+    { id: "evacuate.code_blue", label: "Code Blue — Lockdown" },
+    { id: "evacuate.code_green", label: "Code Green — All clear" },
+  ];
+  const canRemote = state.session?.scopes?.includes("remote");
   app.innerHTML = `
     <main class="app-shell">
       ${header(state.session.label)}
       <button type="button" class="back-link" data-go="home">← Home</button>
       <div class="stack">
         <div>
-          <h1 class="page-title">Evacuation</h1>
-          <p class="muted" style="margin:0">Requires church Wi‑Fi. Confirm before sending.</p>
+          <h1 class="page-title">Emergency codes</h1>
+          <p class="muted" style="margin:0">
+            ${canRemote ? "Remote play enabled." : "Join church Wi‑Fi to play (unless you have remote access)."}
+            Confirm before sending Red or Blue.
+          </p>
         </div>
-        <div id="evac-box">
-          <button type="button" class="btn btn-danger btn-block" data-arm>Arm evacuation alarm</button>
-        </div>
+        ${actions
+          .map((a) => {
+            const isGreen = a.id.includes("green");
+            const cls = isGreen ? "btn-primary" : "btn-danger";
+            if (isGreen) {
+              return `<button type="button" class="btn ${cls} btn-block" data-play="${escapeHtml(a.id)}">${escapeHtml(a.label)}</button>`;
+            }
+            return `<button type="button" class="btn ${cls} btn-block" data-arm-evac="${escapeHtml(a.id)}" data-label="${escapeHtml(a.label)}">${escapeHtml(a.label)}</button>`;
+          })
+          .join("")}
+        <div id="evac-confirm"></div>
         <div id="play-msg"></div>
       </div>
     </main>`;
-  $("[data-arm]")?.addEventListener("click", () => {
-    $("#evac-box").innerHTML = `
-      <div class="confirm-box stack">
-        <p style="margin:0">This will play the evacuation message on all configured AI speakers.</p>
-        <button type="button" class="btn btn-danger btn-block" data-confirm>Confirm: ${escapeHtml(action.label)}</button>
-        <button type="button" class="btn btn-ghost btn-block" data-cancel-arm>Cancel</button>
-      </div>`;
-    $("[data-confirm]")?.addEventListener("click", () =>
-      void playAction(action.id, $("#play-msg")),
-    );
-    $("[data-cancel-arm]")?.addEventListener("click", () => renderEvacuate());
+
+  document.querySelectorAll("[data-arm-evac]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.armEvac;
+      const label = btn.dataset.label || id;
+      $("#evac-confirm").innerHTML = `
+        <div class="confirm-box stack">
+          <p style="margin:0">Confirm play <strong>${escapeHtml(label)}</strong> on campus AI speakers.</p>
+          <button type="button" class="btn btn-danger btn-block" data-confirm-evac="${escapeHtml(id)}">Confirm now</button>
+          <button type="button" class="btn btn-ghost btn-block" data-cancel-evac>Cancel</button>
+        </div>`;
+      $("[data-confirm-evac]")?.addEventListener("click", (e) => {
+        const actionId = e.currentTarget.dataset.confirmEvac;
+        $("#evac-confirm").innerHTML = "";
+        void playAction(actionId, $("#play-msg"));
+      });
+      $("[data-cancel-evac]")?.addEventListener("click", () => {
+        $("#evac-confirm").innerHTML = "";
+      });
+    });
   });
 }
 

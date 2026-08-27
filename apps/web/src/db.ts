@@ -170,3 +170,65 @@ export async function updatePinScopes(env: Env, id: string, scopes: string[]) {
     .bind(JSON.stringify(scopes), id)
     .run();
 }
+
+export async function insertAudit(
+  env: Env,
+  input: {
+    id: string;
+    actionId: string;
+    label: string;
+    pinId: string;
+    mode: string;
+    status: string;
+    detail?: string;
+  },
+) {
+  await env.DB.prepare(
+    `INSERT INTO play_audit (id, action_id, label, pin_id, mode, status, detail)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      input.id,
+      input.actionId,
+      input.label,
+      input.pinId,
+      input.mode,
+      input.status,
+      input.detail ?? null,
+    )
+    .run();
+}
+
+export async function updateAuditStatus(
+  env: Env,
+  id: string,
+  status: string,
+  detail?: string,
+) {
+  await env.DB.prepare(
+    `UPDATE play_audit SET status = ?, detail = COALESCE(?, detail) WHERE id = ?`,
+  )
+    .bind(status, detail ?? null, id)
+    .run();
+}
+
+export async function listAudit(env: Env, limit = 50) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, action_id, label, pin_id, mode, status, detail, created_at
+     FROM play_audit
+     ORDER BY created_at DESC
+     LIMIT ?`,
+  )
+    .bind(limit)
+    .all<{
+      id: string;
+      action_id: string;
+      label: string;
+      pin_id: string;
+      mode: string;
+      status: string;
+      detail: string | null;
+      created_at: string;
+    }>();
+  return results ?? [];
+}

@@ -18,7 +18,7 @@ export type Env = {
   GATEWAY_POLL_SECRET: string;
   GATEWAY_URL: string;
   BELL_ACTIONS: string;
-  EVACUATE_ACTION: string;
+  EVACUATE_ACTIONS: string;
 };
 
 /** Page access: admin implies bells/evacuate. Remote is never implied — must be granted. */
