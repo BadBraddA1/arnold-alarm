@@ -1274,13 +1274,6 @@ function renderEvacuate() {
         </label>
         <div id="evac-confirm"></div>
         <div id="play-msg"></div>
-        <div class="evac-speaker-check stack" style="gap:0.45rem">
-          <p class="evac-meta">Speaker check / test mode</p>
-          <button type="button" class="btn btn-ghost btn-block" data-play="test.speakers">
-            Speaker check — all speakers
-          </button>
-          <p class="evac-meta" style="font-size:0.8rem">Start tone, then TEST ACOC on every AI speaker. Use while walking the building.</p>
-        </div>
       </div>
       <div class="evac-thumb-zone">
         <div class="evac-codes">

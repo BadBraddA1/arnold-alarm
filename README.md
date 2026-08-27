@@ -133,7 +133,7 @@ Sequence example (second bell):
 
 - **Code Red** / **Code Blue** in thumb reach (sticky bottom), color-matched; **hold to confirm**. **Loop until all clear** is on by default. Only one code at a time: Red/Blue lock after start; **All clear** is grayed out until a code is active, then Red/Blue lock until All clear. All clear plays the **start tone**, then Code Green ×2.
 - **Stop & All clear** is green (Code Green ×2 only — not a direct Code Green play button).
-- **Speaker check** (start tone + TEST ACOC) sits under “Speaker check / test mode” (and on Home) — separate from class bells.
+- **Speaker check** (start tone + TEST ACOC) lives on **Home** only — not on the Emergency page, so codes stay clear of test mode.
 
 ## Ops / safety notes
 
