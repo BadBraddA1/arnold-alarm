@@ -14,6 +14,11 @@ import { fileURLToPath } from "node:url";
 import { networkInterfaces } from "node:os";
 import { createRequire } from "node:module";
 import { getPlaybackState, startLiveTalkback, stopTalkback } from "./talkback.js";
+import {
+  getTalkRegStatus,
+  startTalkRegistration,
+  stopTalkRegistration,
+} from "./talk-register.js";
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -27,6 +32,7 @@ export type PaStatus = {
   active: boolean;
   calls: number;
   mode: "sip-ua" | "disabled";
+  talk: ReturnType<typeof getTalkRegStatus>;
 };
 
 type SipDialog = {
@@ -202,6 +208,7 @@ export function getPaStatus(): PaStatus {
     active: activeCalls > 0 || getPlaybackState().actionId === "pa.live",
     calls: activeCalls,
     mode: stack ? "sip-ua" : "disabled",
+    talk: getTalkRegStatus(),
   };
 }
 
@@ -369,12 +376,16 @@ export async function startPaAudioSocket(): Promise<void> {
         const called = extractCalledUser(dialog);
         const acceptAny =
           process.env.PA_ACCEPT_ANY !== "0" && process.env.PA_ACCEPT_ANY !== "false";
+        const talkUser = (process.env.PA_TALK_USER || "").trim();
+        const talkMode = (process.env.PA_TALK_MODE || "test").toLowerCase();
 
         console.log(`[pa] inbound INVITE called="${called || "?"}"`);
 
+        const isTalkDevice = Boolean(talkUser) && (called === talkUser || called.endsWith(talkUser));
         const isTest =
           called === testExtension ||
-          called.endsWith(testExtension);
+          called.endsWith(testExtension) ||
+          (isTalkDevice && talkMode !== "pa");
 
         if (isTest) {
           await handleSipTest(dialog);
@@ -384,11 +395,12 @@ export async function startPaAudioSocket(): Promise<void> {
         const isPa =
           called === extension ||
           called.endsWith(extension) ||
+          (isTalkDevice && talkMode === "pa") ||
           (!called && acceptAny);
 
         if (!isPa) {
           console.log(
-            `[pa] rejecting call (got "${called}", want ${extension} or ${testExtension})`,
+            `[pa] rejecting call (got "${called}", want ${extension}, ${testExtension}, or Talk user)`,
           );
           await dialog.reject?.(404, "Not Found");
           return;
@@ -409,12 +421,21 @@ export async function startPaAudioSocket(): Promise<void> {
 
   await s.start();
   stack = s;
+
+  // UniFi Talk Third-Party Device: register so desk phones can dial the extension
+  const instance = (s as unknown as { _instance?: Parameters<typeof startTalkRegistration>[0] })
+    ._instance;
+  if (instance) {
+    startTalkRegistration(instance, listenPort);
+  }
+
   console.log(
     `[pa] SIP UA listening on udp/${listenPort} (PA ${extension}, test ${testExtension}, public ${publicAddress}) — convenience PA only`,
   );
 }
 
 export async function stopPaAudioSocket(): Promise<void> {
+  stopTalkRegistration();
   stopTalkback();
   if (!stack) return;
   try {
