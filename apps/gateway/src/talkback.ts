@@ -221,6 +221,134 @@ async function runTalkbackSession(input: {
   }
 }
 
+async function streamLiveAdts(
+  pcmReadable: NodeJS.ReadableStream,
+  sockets: WebSocket[],
+  signal: AbortSignal,
+  pcmSampleRate: number,
+): Promise<void> {
+  await sleep(ARM_MS);
+  const argv = [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-f",
+    "s16le",
+    "-ar",
+    String(pcmSampleRate),
+    "-ac",
+    "1",
+    "-i",
+    "pipe:0",
+    "-c:a",
+    "aac",
+    "-profile:a",
+    "aac_low",
+    "-ar",
+    "24000",
+    "-ac",
+    "1",
+    "-b:a",
+    "48k",
+    "-f",
+    "adts",
+    "pipe:1",
+  ];
+  const ff = spawn("ffmpeg", argv, { stdio: ["pipe", "pipe", "pipe"] });
+  let stderr = "";
+  ff.stderr.on("data", (d) => (stderr += String(d)));
+
+  const onAbort = () => {
+    try {
+      pcmReadable.unpipe(ff.stdin!);
+    } catch {
+      /* ignore */
+    }
+    try {
+      ff.stdin?.end();
+    } catch {
+      /* ignore */
+    }
+    ff.kill("SIGKILL");
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+
+  pcmReadable.pipe(ff.stdin!);
+  pcmReadable.on("error", () => {
+    try {
+      ff.stdin?.destroy();
+    } catch {
+      /* ignore */
+    }
+  });
+
+  let pending = Buffer.alloc(0);
+  await new Promise<void>((resolve, reject) => {
+    ff.stdout.on("data", (chunk: Buffer) => {
+      if (signal.aborted) return;
+      pending = Buffer.concat([pending, chunk]);
+      // Keep a small remainder for incomplete frames
+      while (pending.length >= 7) {
+        if (pending[0] !== 0xff || (pending[1] & 0xf0) !== 0xf0) {
+          const sync = pending.indexOf(0xff, 1);
+          if (sync < 0) {
+            pending = Buffer.alloc(0);
+            break;
+          }
+          pending = pending.subarray(sync);
+          continue;
+        }
+        const len =
+          ((pending[3] & 0x03) << 11) | (pending[4] << 3) | (pending[5] >> 5);
+        if (len < 7 || pending.length < len) break;
+        const frame = pending.subarray(0, len);
+        pending = pending.subarray(len);
+        for (const ws of sockets) {
+          if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+        }
+      }
+    });
+    ff.on("close", (code) => {
+      signal.removeEventListener("abort", onAbort);
+      if (signal.aborted) resolve();
+      else if (code === 0 || code === null) resolve();
+      else reject(new Error(`live ffmpeg failed (${code}): ${stderr.slice(0, 300)}`));
+    });
+    ff.on("error", reject);
+  });
+}
+
+async function runLiveTalkbackSession(input: {
+  speakerIds: string[];
+  pcmReadable: NodeJS.ReadableStream;
+  pcmSampleRate: number;
+  signal: AbortSignal;
+}): Promise<void> {
+  const { cookie } = await getProtectAuthHeaders();
+  const sockets = await openTalkbackSockets(
+    input.speakerIds,
+    cookie,
+    input.signal,
+  );
+  if (!sockets.length) return;
+  try {
+    await streamLiveAdts(
+      input.pcmReadable,
+      sockets,
+      input.signal,
+      input.pcmSampleRate,
+    );
+  } finally {
+    for (const ws of sockets) {
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
 function resolveAudioFile(file: string): string {
   const audioDir =
     process.env.AUDIO_DIR ||
@@ -280,6 +408,58 @@ export async function startTalkback(input: {
     });
 
   // Let the session arm before returning — reduces clipped starts.
+  await sleep(ARM_MS + 50);
+}
+
+/** Live mic/SIP PCM → Protect talkback (convenience PA). */
+export async function startLiveTalkback(input: {
+  actionId?: string;
+  speakerIds: string[];
+  pcmReadable: NodeJS.ReadableStream;
+  /** Asterisk AudioSocket default is 8000. */
+  pcmSampleRate?: number;
+}): Promise<void> {
+  if (!input.speakerIds.length) {
+    throw new Error("PA speakerIds required");
+  }
+  if (playbackPromise) {
+    stopTalkback();
+    try {
+      await playbackPromise;
+    } catch {
+      /* prior session aborted */
+    }
+  }
+
+  const controller = new AbortController();
+  abortController = controller;
+  state.active = true;
+  state.actionId = input.actionId || "pa.live";
+  state.loop = false;
+  state.repeat = 1;
+  state.startedAt = Date.now();
+
+  playbackPromise = runLiveTalkbackSession({
+    speakerIds: input.speakerIds,
+    pcmReadable: input.pcmReadable,
+    pcmSampleRate: input.pcmSampleRate ?? 8000,
+    signal: controller.signal,
+  })
+    .catch((err) => {
+      if (!controller.signal.aborted) throw err;
+    })
+    .finally(() => {
+      if (abortController === controller) {
+        abortController = null;
+        playbackPromise = null;
+        state.active = false;
+        state.actionId = null;
+        state.loop = false;
+        state.repeat = 1;
+        state.startedAt = null;
+      }
+    });
+
   await sleep(ARM_MS + 50);
 }
 

@@ -3,6 +3,7 @@ import { jwtVerify } from "jose";
 import { z } from "zod";
 import { triggerAction, checkProtectHealth, type ActionMap } from "./protect.js";
 import { getPlaybackState, stopTalkback } from "./talkback.js";
+import { getPaStatus, startPaAudioSocket } from "./pa-sip.js";
 
 const PORT = Number(process.env.PORT || 8787);
 const PLAY_JWT_SECRET = process.env.PLAY_JWT_SECRET || "";
@@ -244,6 +245,7 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
       poll: Boolean(POLL_SECRET),
       playback,
       protect,
+      pa: getPaStatus(),
       now: Date.now(),
     });
     return;
@@ -380,4 +382,5 @@ createServer((req, res) => {
 }).listen(PORT, "0.0.0.0", () => {
   console.log(`arnold-alarm gateway listening on :${PORT}`);
   console.log(`actions: ${Object.keys(actions).join(", ") || "(none)"}`);
+  startPaAudioSocket();
 });

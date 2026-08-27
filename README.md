@@ -111,6 +111,7 @@ Emergency + bell clips use Protect **ringtones** (`PLAY_SPEAKER` on all speaker 
 - **Mid-clip stop:** Protect **ringtones cannot be cut mid-play**. `Stop` only aborts **talkback** streams. All clear stops talkback (if any) then plays Code Green ×2. Accept for ringtone path; revisit only if we need talkback mid-stop again.
 - **Ringtone ID validation:** gateway checks the NVR ringtone list before play (bad IDs used to return HTTP 200 and silence).
 - **PWA:** Add to Home Screen on iPhone (Share → Add to Home Screen). Manifest + icons ship with the Worker assets.
+- **SIP PA (ext 888):** convenience paging only — never a substitute for Code Red / Blue / All clear.
 
 ## Empty-campus verification (when people leave)
 
@@ -119,6 +120,44 @@ No need to re-test speakers for UI work. When the building is empty, re-verify o
 1. Test tone — walk each horn.
 2. Code Blue once (short), then All clear.
 3. Remote queue from cell (remote PIN) — confirm status says queued, then audio after Pi poll.
+
+## Convenience PA (SIP dial-in — not emergency)
+
+Office can dial **888** on the Pi; Asterisk answers and streams live audio to campus AI Speakers via Protect talkback. **Do not use for lockdown / evacuate** — use Arnold Alarm emergency codes.
+
+```
+Talk phone → UniFi Talk → Asterisk on Pi (ext 888)
+                         → AudioSocket → gateway → Protect talkback → speakers
+```
+
+### Install on the Pi
+
+```bash
+# From the arnold-alarm checkout on the Pi (after gateway is installed):
+cd ~/arnold-alarm/apps/gateway   # or your clone path
+git pull
+pnpm build && sudo systemctl restart arnold-alarm-gateway
+
+TALK_CONSOLE_IP=192.168.x.x bash scripts/install-pa.sh
+```
+
+Set `PA_SPEAKER_IDS` in `~/.config/arnold-alarm/gateway.env` to the Protect speaker device IDs (same IDs as talkback ACTIONS), then restart the gateway. Confirm:
+
+```bash
+curl -s http://127.0.0.1:8787/health | jq .pa
+# { "enabled": true, "listening": true, "port": 9092, ... }
+```
+
+**Softphone test (before Talk):** register SIP user `100` to the Pi (password printed by install script), dial **888**, speak, hang up.
+
+### UniFi Talk wiring
+
+1. Talk → Settings → enable **Static Signaling Port** if required by your console.
+2. Talk → Settings → **Third-Party SIP Provider** → Custom → point at the Pi LAN IP (UDP **5060**). Allow the Talk console IP in Asterisk `talk-identify` (`TALK_CONSOLE_IP` in install).
+3. Route a dialable number / short code so desk phones reach the trunk (target extension **888** on the Pi). Talk’s UI varies by version — if short-code routing is awkward, keep softphone PA until Talk trunk dialing is confirmed.
+4. Test from a desk phone: dial → hear yourself on campus speakers → hang up (talkback stops).
+
+Configs live in [`apps/gateway/asterisk/`](apps/gateway/asterisk/).
 
 ## Protect (optional backup / custom clips)
 
