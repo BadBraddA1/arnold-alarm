@@ -71,7 +71,16 @@ Known AI speakers (Integration API):
 | Lobby | `6a3b3da90010b103e4341d80` |
 | Fellowship hall | `6a3b06950026b103e4329ce6` |
 
-Until Alarm Manager webhooks are linked, actions use **talkback** to stream `.ogg` clips from the Pi (`AUDIO_DIR`). Supports **loop** and **Stop speakers** from the emergency page.
+Emergency + bell clips use Protect **ringtones** (`PLAY_SPEAKER` on all speaker MACs). Ringtone IDs must match the NVR exactly (Protect returns HTTP 200 even for bad IDs — silence). Current IDs on COC Arnold Campus UNVR:
+
+| Clip | Ringtone ID |
+|---|---|
+| Code Red Full Master | `6a3b249800d9b103e4333e04` |
+| Code Blue Master | `6a3ed6e8013db103e448e0d1` |
+| Code Green au | `6a3be77003a4b103e436e524` |
+| TEST ACOC | `6a3b089901a2b103e432add8` |
+
+**Test tone — all speakers** uses the Integration API test-sound endpoint (built-in tone), not a ringtone clip.
 
 `PROTECT_USER` / `PROTECT_PASS` must be a **local Protect admin** on the UNVR (Settings → Admins → local access). SSH `root` is not the same account.
 
@@ -92,3 +101,9 @@ Remote play also needs Worker secret `GATEWAY_POLL_SECRET` matching the Pi, and 
 - Big **building clock** (America/Chicago).
 - **Ring in 15 min** after service (timer on the Pi).
 - Play-now buttons per automation.
+
+## Emergency codes UI
+
+- **Code Red** / **Code Blue** buttons are color-matched (red / blue), large tap targets, confirm before play.
+- **Stop & All clear** is green (Code Green ×2 only — not a direct Code Green play button).
+- Confirm sheets tint to the same code color. Test tone stays secondary under “Speaker check”.

@@ -472,11 +472,30 @@ function renderBells() {
   void refreshSchedule($("#sched-list"));
 }
 
+function evacCodeTone(actionId) {
+  if (actionId.includes("blue")) return "blue";
+  if (actionId.includes("green") || actionId === "__all_clear__") return "green";
+  return "red";
+}
+
+function evacButtonMeta(action) {
+  const tone = evacCodeTone(action.id);
+  const short =
+    tone === "blue" ? "Lockdown" : tone === "green" ? "All clear" : "Evacuate";
+  const title =
+    tone === "blue" ? "Code Blue" : tone === "green" ? "Code Green" : "Code Red";
+  return { tone, short, title, className: `btn-code-${tone}` };
+}
+
 function renderEvacuate() {
   const actions = (state.config?.evacuateActions || [
     { id: "evacuate.code_red", label: "Code Red — Evacuate" },
     { id: "evacuate.code_blue", label: "Code Blue — Lockdown" },
   ]).filter((a) => !a.id.includes("green"));
+  const ordered = [...actions].sort((a, b) => {
+    const rank = (id) => (id.includes("red") ? 0 : id.includes("blue") ? 1 : 2);
+    return rank(a.id) - rank(b.id);
+  });
   app.innerHTML = `
     <main class="app-shell">
       ${header(state.session.label)}
@@ -484,29 +503,39 @@ function renderEvacuate() {
       <div class="stack">
         <div>
           <h1 class="page-title">Emergency codes</h1>
-          <p class="muted" style="margin:0">
-            ${playHint()} Confirm before sending Red or Blue. Plays on all campus speakers.
-            <strong>All clear (Code Green)</strong> is only issued via the button below — it plays twice on every speaker.
+          <p class="evac-meta">
+            ${playHint()} Tap Red or Blue, then confirm. Plays on all campus speakers.
           </p>
+        </div>
+        <div class="evac-codes">
+          ${ordered
+            .map((a) => {
+              const meta = evacButtonMeta(a);
+              return `<button type="button" class="btn ${meta.className} btn-block btn-evac" data-arm-evac="${escapeHtml(a.id)}" data-label="${escapeHtml(a.label)}" data-tone="${meta.tone}">
+                <span>${escapeHtml(meta.title)}</span>
+                <span class="btn-evac-sub">${escapeHtml(meta.short)}</span>
+              </button>`;
+            })
+            .join("")}
         </div>
         <label class="checks" style="margin:0">
           <input type="checkbox" id="evac-loop" /> Loop until all clear (lockdown / evacuate)
         </label>
-        <button type="button" class="btn btn-primary btn-block" id="evac-all-clear">
-          Stop &amp; All clear (Code Green ×2)
-        </button>
-        ${actions
-          .map((a) => {
-            return `<button type="button" class="btn btn-danger btn-block" data-arm-evac="${escapeHtml(a.id)}" data-label="${escapeHtml(a.label)}">${escapeHtml(a.label)}</button>`;
-          })
-          .join("")}
-        <p class="muted" style="margin:0.75rem 0 0;font-size:0.85rem">Speaker check</p>
-        <button type="button" class="btn btn-ghost btn-block" data-play="test.speakers">
-          Test tone — all speakers
-        </button>
-        <p class="muted" style="margin:0.25rem 0 0;font-size:0.8rem">Built-in Protect test tone, one after another (~6 sec). Walk the building to verify each horn.</p>
+        <div class="evac-all-clear">
+          <button type="button" class="btn btn-code-green btn-block btn-evac" id="evac-all-clear">
+            <span>Stop &amp; All clear</span>
+            <span class="btn-evac-sub">Code Green ×2 on every speaker</span>
+          </button>
+        </div>
         <div id="evac-confirm"></div>
         <div id="play-msg"></div>
+        <div class="evac-speaker-check stack" style="gap:0.45rem">
+          <p class="evac-meta">Speaker check</p>
+          <button type="button" class="btn btn-ghost btn-block" data-play="test.speakers">
+            Test tone — all speakers
+          </button>
+          <p class="evac-meta" style="font-size:0.8rem">Built-in Protect test tone, one after another (~6 sec).</p>
+        </div>
       </div>
     </main>`;
 
@@ -514,10 +543,11 @@ function renderEvacuate() {
     btn.addEventListener("click", () => {
       const id = btn.dataset.armEvac;
       const label = btn.dataset.label || id;
+      const tone = btn.dataset.tone || evacCodeTone(id);
       $("#evac-confirm").innerHTML = `
-        <div class="confirm-box stack">
+        <div class="confirm-box confirm-box--${tone} stack">
           <p style="margin:0">Confirm play <strong>${escapeHtml(label)}</strong> on campus AI speakers.</p>
-          <button type="button" class="btn btn-danger btn-block" data-confirm-evac="${escapeHtml(id)}">Confirm now</button>
+          <button type="button" class="btn btn-code-${tone} btn-block" data-confirm-evac="${escapeHtml(id)}">Confirm now</button>
           <button type="button" class="btn btn-ghost btn-block" data-cancel-evac>Cancel</button>
         </div>`;
       $("[data-confirm-evac]")?.addEventListener("click", (e) => {
@@ -529,14 +559,15 @@ function renderEvacuate() {
       $("[data-cancel-evac]")?.addEventListener("click", () => {
         $("#evac-confirm").innerHTML = "";
       });
+      $("#evac-confirm")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     });
   });
 
   $("#evac-all-clear")?.addEventListener("click", () => {
     $("#evac-confirm").innerHTML = `
-      <div class="confirm-box stack">
+      <div class="confirm-box confirm-box--green stack">
         <p style="margin:0">Issue <strong>All clear</strong> on all campus speakers? Code Green will play <strong>twice</strong>. Any active lockdown/evacuate loop should be ended first.</p>
-        <button type="button" class="btn btn-primary btn-block" id="confirm-all-clear">Confirm all clear</button>
+        <button type="button" class="btn btn-code-green btn-block" id="confirm-all-clear">Confirm all clear</button>
         <button type="button" class="btn btn-ghost btn-block" data-cancel-evac>Cancel</button>
       </div>`;
     $("#confirm-all-clear")?.addEventListener("click", () => {
@@ -546,6 +577,7 @@ function renderEvacuate() {
     $("[data-cancel-evac]")?.addEventListener("click", () => {
       $("#evac-confirm").innerHTML = "";
     });
+    $("#evac-confirm")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   });
 }
 

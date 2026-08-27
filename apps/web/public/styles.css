@@ -9,6 +9,12 @@
   --danger: #d94841;
   --danger-ink: #fff;
   --ok: #3d9a6a;
+  --code-red: #c62828;
+  --code-red-ink: #fff;
+  --code-blue: #1565c0;
+  --code-blue-ink: #fff;
+  --code-green: #2e7d32;
+  --code-green-ink: #fff;
   --radius: 12px;
   --font-display: "Source Serif 4", Georgia, serif;
   --font-ui: "DM Sans", system-ui, sans-serif;
@@ -101,6 +107,88 @@ button, input { font: inherit; }
 .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
 .btn-danger { background: var(--danger); color: var(--danger-ink); }
 .btn-block { width: 100%; font-size: 1.05rem; }
+
+.btn-code-red {
+  background: var(--code-red);
+  color: var(--code-red-ink);
+  box-shadow: 0 2px 0 color-mix(in oklab, var(--code-red) 55%, #000);
+}
+.btn-code-blue {
+  background: var(--code-blue);
+  color: var(--code-blue-ink);
+  box-shadow: 0 2px 0 color-mix(in oklab, var(--code-blue) 55%, #000);
+}
+.btn-code-green {
+  background: var(--code-green);
+  color: var(--code-green-ink);
+  box-shadow: 0 2px 0 color-mix(in oklab, var(--code-green) 55%, #000);
+}
+.btn-code-red:hover:not(:disabled),
+.btn-code-blue:hover:not(:disabled),
+.btn-code-green:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+.btn-code-red:focus-visible,
+.btn-code-blue:focus-visible,
+.btn-code-green:focus-visible {
+  outline: 3px solid color-mix(in oklab, #fff 70%, transparent);
+  outline-offset: 3px;
+}
+.btn-code-red:active:not(:disabled),
+.btn-code-blue:active:not(:disabled),
+.btn-code-green:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+
+.btn-evac {
+  min-height: 4.5rem;
+  font-size: 1.2rem;
+  letter-spacing: -0.01em;
+  border-radius: 14px;
+  line-height: 1.25;
+}
+.btn-evac .btn-evac-sub {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.82rem;
+  font-weight: 500;
+  opacity: 0.88;
+}
+
+.evac-codes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.evac-all-clear {
+  margin-top: 0.35rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+.evac-meta {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.evac-speaker-check {
+  margin-top: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.confirm-box--red {
+  border-color: color-mix(in oklab, var(--code-red) 55%, var(--line));
+  background: color-mix(in oklab, var(--code-red) 14%, var(--bg-elevated));
+}
+.confirm-box--blue {
+  border-color: color-mix(in oklab, var(--code-blue) 55%, var(--line));
+  background: color-mix(in oklab, var(--code-blue) 14%, var(--bg-elevated));
+}
+.confirm-box--green {
+  border-color: color-mix(in oklab, var(--code-green) 55%, var(--line));
+  background: color-mix(in oklab, var(--code-green) 14%, var(--bg-elevated));
+}
 
 .pin-inputs {
   display: grid;
