@@ -140,6 +140,19 @@ async function login(): Promise<Session> {
   return cachedSession;
 }
 
+/** Pre-login so the first PA page doesn't pay NVR auth latency. */
+export async function warmProtectSession(): Promise<void> {
+  try {
+    await login();
+    console.log("[protect] session warmed");
+  } catch (err) {
+    console.warn(
+      "[protect] warm failed",
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
 export async function getProtectAuthHeaders(): Promise<{
   cookie: string;
   csrf: string;

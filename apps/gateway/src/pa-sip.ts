@@ -186,15 +186,22 @@ const SYSTEM_URL =
   );
 
 /** Convenience PA respects global arm/disarm from the Worker. */
+let armedCache: { armed: boolean; at: number } | null = null;
+
 async function isSystemArmed(): Promise<boolean> {
+  if (armedCache && Date.now() - armedCache.at < 15_000) {
+    return armedCache.armed;
+  }
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 3000);
+    const timer = setTimeout(() => ctrl.abort(), 800);
     const res = await fetch(SYSTEM_URL, { signal: ctrl.signal, cache: "no-store" });
     clearTimeout(timer);
     if (!res.ok) return true; // fail open on HTTP errors
     const data = (await res.json()) as { armed?: boolean };
-    return data.armed !== false;
+    const armed = data.armed !== false;
+    armedCache = { armed, at: Date.now() };
+    return armed;
   } catch (err) {
     console.warn("[pa] could not read /api/system — allowing PA", err);
     return true;
@@ -684,7 +691,7 @@ async function handlePaLive(
 
   if (!opts.alreadyAccepted) {
     await dialog.trying?.();
-    await dialog.ringing?.();
+    // Skip ringing delay — answer immediately for paging.
     await dialog.accept({ payloadType: 0 }); // PCMU
     activeCalls += 1;
   }
@@ -693,8 +700,8 @@ async function handlePaLive(
     `[pa] live talkback starting (ext ${extension}) → ${speakerIds.length} speakers`,
   );
 
-  // Volume in parallel with talkback arm — don't block the earpiece beep.
-  const volumeReady = (async () => {
+  // Volume in parallel — never block the earpiece beep.
+  void (async () => {
     try {
       const { setAllSpeakerVolumes, getVolumeProfile } = await import("./protect.js");
       await setAllSpeakerVolumes(getVolumeProfile().evac);
@@ -751,7 +758,6 @@ async function handlePaLive(
     }
   }
 
-  // Open Protect talkback first; beep only once campus path is armed.
   let cleaned = false;
   const cleanup = () => {
     if (cleaned) return;
@@ -788,22 +794,22 @@ async function handlePaLive(
   }, 4000);
 
   try {
-    // Returns once Protect sockets open (no extra arm wait) — beep ASAP.
-    await startLiveTalkback({
+    // Beep immediately; arm Protect talkback in parallel (mic PCM buffers).
+    const liveP = startLiveTalkback({
       actionId: "pa.live",
       speakerIds,
       pcmReadable: pcm,
       pcmSampleRate: 8000,
       awaitDone: false,
     });
-    console.log("[pa] campus talkback armed — earpiece beep, then speak");
 
+    console.log("[pa] earpiece beep — speak anytime (campus arming in background)");
     try {
       const sr = 8000;
-      const n = Math.floor(sr * 0.12);
+      const n = Math.floor(sr * 0.1);
       const beep = Buffer.alloc(n * 2);
       for (let i = 0; i < n; i++) {
-        const v = Math.sin((2 * Math.PI * 880 * i) / sr) * 0.45 * 32767;
+        const v = Math.sin((2 * Math.PI * 880 * i) / sr) * 0.5 * 32767;
         beep.writeInt16LE(Math.max(-32767, Math.min(32767, Math.round(v))), i * 2);
       }
       await playToPhone(dialog, beep);
@@ -811,7 +817,9 @@ async function handlePaLive(
       /* ignore */
     }
 
-    void volumeReady;
+    await liveP.catch((err) => {
+      console.error("[pa] live talkback failed", err);
+    });
     await waitForTalkbackIdle();
   } catch (err) {
     console.error("[pa] live talkback failed", err);

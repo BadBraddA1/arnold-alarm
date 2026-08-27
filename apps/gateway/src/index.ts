@@ -497,5 +497,6 @@ createServer((req, res) => {
 }).listen(PORT, "0.0.0.0", () => {
   console.log(`arnold-alarm gateway listening on :${PORT}`);
   console.log(`actions: ${Object.keys(actions).join(", ") || "(none)"}`);
+  void import("./protect.js").then((m) => m.warmProtectSession());
   startPaAudioSocket();
 });

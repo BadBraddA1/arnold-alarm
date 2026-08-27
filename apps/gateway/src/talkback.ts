@@ -319,16 +319,16 @@ async function runTalkbackSession(input: {
   }
 }
 
-/** Live PA: shorter arm than file playback — mic PCM buffers during this window. */
-const LIVE_ARM_MS = 250;
-
-async function streamLiveAdts(
-  pcmReadable: NodeJS.ReadableStream,
-  sockets: WebSocket[],
-  signal: AbortSignal,
-  pcmSampleRate: number,
-): Promise<void> {
-  await sleep(LIVE_ARM_MS);
+async function runLiveTalkbackSession(input: {
+  speakerIds: string[];
+  pcmReadable: NodeJS.ReadableStream;
+  pcmSampleRate: number;
+  signal: AbortSignal;
+  onReady?: () => void;
+}): Promise<void> {
+  // Encode mic PCM immediately while sockets open in parallel — cuts ~2–3s
+  // of dead air after the earpiece beep.
+  const authP = getProtectAuthHeaders();
   const argv = [
     "-hide_banner",
     "-loglevel",
@@ -336,7 +336,7 @@ async function streamLiveAdts(
     "-f",
     "s16le",
     "-ar",
-    String(pcmSampleRate),
+    String(input.pcmSampleRate),
     "-ac",
     "1",
     "-i",
@@ -361,7 +361,7 @@ async function streamLiveAdts(
 
   const onAbort = () => {
     try {
-      pcmReadable.unpipe(ff.stdin!);
+      input.pcmReadable.unpipe(ff.stdin!);
     } catch {
       /* ignore */
     }
@@ -372,12 +372,9 @@ async function streamLiveAdts(
     }
     ff.kill("SIGKILL");
   };
-  signal.addEventListener("abort", onAbort, { once: true });
-
-  let framesOut = 0;
-  let loggedFirst = false;
-  pcmReadable.pipe(ff.stdin!);
-  pcmReadable.on("error", () => {
+  input.signal.addEventListener("abort", onAbort, { once: true });
+  input.pcmReadable.pipe(ff.stdin!);
+  input.pcmReadable.on("error", () => {
     try {
       ff.stdin?.destroy();
     } catch {
@@ -385,81 +382,104 @@ async function streamLiveAdts(
     }
   });
 
-  let pending = Buffer.alloc(0);
-  await new Promise<void>((resolve, reject) => {
-    ff.stdout.on("data", (chunk: Buffer) => {
-      if (signal.aborted) return;
-      pending = Buffer.concat([pending, chunk]);
-      // Keep a small remainder for incomplete frames
-      while (pending.length >= 7) {
-        if (pending[0] !== 0xff || (pending[1] & 0xf0) !== 0xf0) {
-          const sync = pending.indexOf(0xff, 1);
-          if (sync < 0) {
-            pending = Buffer.alloc(0);
-            break;
-          }
-          pending = pending.subarray(sync);
-          continue;
-        }
-        const len =
-          ((pending[3] & 0x03) << 11) | (pending[4] << 3) | (pending[5] >> 5);
-        if (len < 7 || pending.length < len) break;
-        const frame = pending.subarray(0, len);
-        pending = pending.subarray(len);
-        let open = 0;
-        for (const ws of sockets) {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(frame);
-            open += 1;
-          }
-        }
-        framesOut += 1;
-        if (!loggedFirst && open) {
-          loggedFirst = true;
-          console.log(
-            `[talkback] live: first ADTS frame → ${open} speaker socket(s)`,
-          );
-        }
+  let sockets: WebSocket[] = [];
+  let socketsReady = false;
+  const pendingFrames: Buffer[] = [];
+  const MAX_PENDING = 120; // ~5s of AAC frames
+  let framesOut = 0;
+  let loggedFirst = false;
+
+  const emitFrame = (frame: Buffer) => {
+    if (!socketsReady) {
+      pendingFrames.push(frame);
+      while (pendingFrames.length > MAX_PENDING) pendingFrames.shift();
+      return;
+    }
+    let open = 0;
+    for (const ws of sockets) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(frame);
+        open += 1;
       }
-    });
+    }
+    framesOut += 1;
+    if (!loggedFirst && open) {
+      loggedFirst = true;
+      console.log(
+        `[talkback] live: first ADTS frame → ${open} speaker socket(s)`,
+      );
+    }
+  };
+
+  let pending = Buffer.alloc(0);
+  ff.stdout.on("data", (chunk: Buffer) => {
+    if (input.signal.aborted) return;
+    pending = Buffer.concat([pending, chunk]);
+    while (pending.length >= 7) {
+      if (pending[0] !== 0xff || (pending[1] & 0xf0) !== 0xf0) {
+        const sync = pending.indexOf(0xff, 1);
+        if (sync < 0) {
+          pending = Buffer.alloc(0);
+          break;
+        }
+        pending = pending.subarray(sync);
+        continue;
+      }
+      const len =
+        ((pending[3] & 0x03) << 11) | (pending[4] << 3) | (pending[5] >> 5);
+      if (len < 7 || pending.length < len) break;
+      const frame = pending.subarray(0, len);
+      pending = pending.subarray(len);
+      emitFrame(frame);
+    }
+  });
+
+  const ffmpegDone = new Promise<void>((resolve, reject) => {
     ff.on("close", (code) => {
-      signal.removeEventListener("abort", onAbort);
+      input.signal.removeEventListener("abort", onAbort);
       console.log(
         `[talkback] live ffmpeg closed code=${code} frames=${framesOut} stderr=${stderr.slice(0, 120) || "ok"}`,
       );
-      if (signal.aborted) resolve();
+      if (input.signal.aborted) resolve();
       else if (code === 0 || code === null) resolve();
       else reject(new Error(`live ffmpeg failed (${code}): ${stderr.slice(0, 300)}`));
     });
     ff.on("error", reject);
   });
-}
 
-async function runLiveTalkbackSession(input: {
-  speakerIds: string[];
-  pcmReadable: NodeJS.ReadableStream;
-  pcmSampleRate: number;
-  signal: AbortSignal;
-  onReady?: () => void;
-}): Promise<void> {
-  const { cookie } = await getProtectAuthHeaders();
-  const sockets = await openTalkbackSockets(
-    input.speakerIds,
-    cookie,
-    input.signal,
-  );
-  if (!sockets.length) {
-    throw new Error("No talkback speakers connected for live PA");
-  }
   try {
-    input.onReady?.();
-    await streamLiveAdts(
-      input.pcmReadable,
-      sockets,
+    const { cookie } = await authP;
+    if (input.signal.aborted) return;
+    sockets = await openTalkbackSockets(
+      input.speakerIds,
+      cookie,
       input.signal,
-      input.pcmSampleRate,
     );
+    if (!sockets.length) {
+      throw new Error("No talkback speakers connected for live PA");
+    }
+    for (const frame of pendingFrames) {
+      let open = 0;
+      for (const ws of sockets) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(frame);
+          open += 1;
+        }
+      }
+      framesOut += 1;
+      if (!loggedFirst && open) {
+        loggedFirst = true;
+        console.log(
+          `[talkback] live: first ADTS frame → ${open} speaker socket(s) (flush)`,
+        );
+      }
+    }
+    pendingFrames.length = 0;
+    socketsReady = true;
+    input.onReady?.();
+    await ffmpegDone;
   } finally {
+    onAbort();
     for (const ws of sockets) {
       try {
         ws.close();
