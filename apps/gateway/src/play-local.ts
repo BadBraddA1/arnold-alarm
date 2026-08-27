@@ -18,7 +18,6 @@ export async function playLocalAction(actionId: string): Promise<void> {
     stopTalkback();
     const def = actions["evacuate.code_green"];
     if (!def) throw new Error("All clear action not configured");
-    // evacuate.code_green ACTION already carries repeat:2 on the Pi
     await triggerAction(def, { actionId: "evacuate.code_green" });
     return;
   }

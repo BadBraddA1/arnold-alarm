@@ -222,6 +222,22 @@ function applyArmedState(armed, meta = {}) {
   }
 }
 
+/** idle = Red/Blue open, Green locked. red|blue = only All clear open. */
+function applyEvacPhase(phase) {
+  if (!state.config) state.config = {};
+  const next =
+    phase === "red" || phase === "blue" || phase === "idle" ? phase : "idle";
+  const prev = state.config.evacPhase || "idle";
+  state.config.evacPhase = next;
+  if (state.route === "evacuate" && prev !== next) {
+    renderEvacuate();
+  }
+}
+
+function evacPhase() {
+  return state.config?.evacPhase || "idle";
+}
+
 function stopLiveSync() {
   if (systemPollTimer) {
     clearInterval(systemPollTimer);
@@ -281,6 +297,11 @@ async function ensureLiveSync() {
       });
       if (state.route === "home") void loadAudit();
     });
+    channel.subscribe("evac", (msg) => {
+      const payload = msg.data || {};
+      if (payload.phase) applyEvacPhase(payload.phase);
+      if (state.route === "home") void loadAudit();
+    });
     channel.subscribe("activity", () => {
       if (state.route === "home") void loadAudit();
     });
@@ -308,6 +329,7 @@ async function pollSystemArmed() {
     if (typeof data.armed === "boolean") {
       applyArmedState(data.armed);
     }
+    if (data.evacPhase) applyEvacPhase(data.evacPhase);
   } catch {
     /* ignore */
   }
@@ -692,6 +714,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
       msgEl.innerHTML = heldBanner(data.message);
       return;
     }
+    if (data.evacPhase) applyEvacPhase(data.evacPhase);
     await logAudit(actionId, "remote", delayMinutes > 0 ? "scheduled" : "queued", loop ? "loop" : undefined);
     msgEl.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "Queued on campus — not playing yet.")}</div>`;
     return;
@@ -745,6 +768,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
     msgEl.innerHTML = heldBanner(data.message);
     return;
   }
+  if (data.evacPhase) applyEvacPhase(data.evacPhase);
   if (!data.token || !data.gatewayUrl) {
     msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not authorize play.")}</div>`;
     return;
@@ -759,7 +783,9 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
           ? 30000
           : actionId === "bells.first"
             ? 15000
-            : 8000,
+            : actionId.startsWith("evacuate.")
+              ? 20000
+              : 8000,
     );
     const playRes = await fetch(`${data.gatewayUrl}/play`, {
       method: "POST",
@@ -802,6 +828,7 @@ async function stopAndAllClear(msgEl) {
       if (msgEl) msgEl.innerHTML = heldBanner(data.message);
       return;
     }
+    applyEvacPhase(data.evacPhase || "idle");
     await logAudit("__all_clear__", "remote", "queued", "stop + all clear");
     if (msgEl) msgEl.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "All clear queued on campus — not playing yet.")}</div>`;
     return;
@@ -819,23 +846,28 @@ async function stopAndAllClear(msgEl) {
     if (msgEl) msgEl.innerHTML = heldBanner(data.message);
     return;
   }
+  applyEvacPhase(data.evacPhase || "idle");
   if (!data.token || !data.gatewayUrl) {
     if (msgEl) msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not authorize all clear.")}</div>`;
     return;
   }
   try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 45000);
     const clearRes = await fetch(`${data.gatewayUrl}/all-clear`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: data.token }),
+      signal: ctrl.signal,
     });
+    clearTimeout(timer);
     const clearData = await clearRes.json().catch(() => ({}));
     if (!clearRes.ok) {
       if (msgEl) msgEl.innerHTML = `<div class="error-banner">${escapeHtml(clearData.error || "All clear failed.")}</div>`;
       return;
     }
     await logAudit("__all_clear__", "lan", "done", "stop + all clear");
-    if (msgEl) msgEl.innerHTML = `<div class="success-banner">Playing now — All clear (Code Green ×2) on all speakers.</div>`;
+    if (msgEl) msgEl.innerHTML = `<div class="success-banner">Playing now — start tone, then All clear (Code Green ×2).</div>`;
   } catch {
     if (msgEl) msgEl.innerHTML = `<div class="error-banner">Pi offline — cannot reach the alarm gateway.</div>`;
   }
@@ -1215,6 +1247,16 @@ function renderEvacuate() {
     const rank = (id) => (id.includes("red") ? 0 : id.includes("blue") ? 1 : 2);
     return rank(a.id) - rank(b.id);
   });
+  const phase = evacPhase();
+  const codesOpen = phase === "idle";
+  const clearOpen = phase === "red" || phase === "blue";
+  const phaseHint =
+    phase === "red"
+      ? "Code Red is active — issue All clear when safe. Another Red/Blue is locked."
+      : phase === "blue"
+        ? "Code Blue is active — issue All clear when safe. Another Red/Blue is locked."
+        : "Issue Code Red or Blue first. All clear stays locked until a code is active.";
+
   app.innerHTML = `
     <main class="app-shell evac-shell">
       ${header(state.session.label)}
@@ -1225,6 +1267,7 @@ function renderEvacuate() {
           <p class="evac-meta">
             ${playHint()} Hold Confirm to send. Plays on all campus speakers.
           </p>
+          <p class="evac-meta" style="margin-top:0.35rem">${escapeHtml(phaseHint)}</p>
         </div>
         <label class="checks" style="margin:0">
           <input type="checkbox" id="evac-loop" checked /> Loop until all clear (default for Code Red / Blue)
@@ -1244,17 +1287,18 @@ function renderEvacuate() {
           ${ordered
             .map((a) => {
               const meta = evacButtonMeta(a);
-              return `<button type="button" class="btn ${meta.className} btn-block btn-evac" data-arm-evac="${escapeHtml(a.id)}" data-label="${escapeHtml(a.label)}" data-tone="${meta.tone}">
+              const disabled = !codesOpen;
+              return `<button type="button" class="btn ${meta.className} btn-block btn-evac" data-arm-evac="${escapeHtml(a.id)}" data-label="${escapeHtml(a.label)}" data-tone="${meta.tone}" ${disabled ? "disabled aria-disabled=\"true\"" : ""}>
                 <span>${escapeHtml(meta.title)}</span>
-                <span class="btn-evac-sub">${escapeHtml(meta.short)}</span>
+                <span class="btn-evac-sub">${disabled ? "Locked — all clear first" : escapeHtml(meta.short)}</span>
               </button>`;
             })
             .join("")}
         </div>
         <div class="evac-all-clear">
-          <button type="button" class="btn btn-code-green btn-block btn-evac" id="evac-all-clear">
+          <button type="button" class="btn btn-code-green btn-block btn-evac" id="evac-all-clear" ${clearOpen ? "" : "disabled aria-disabled=\"true\""}>
             <span>Stop &amp; All clear</span>
-            <span class="btn-evac-sub">Code Green ×2 on every speaker</span>
+            <span class="btn-evac-sub">${clearOpen ? "Start tone + Code Green ×2" : "Locked until Red or Blue"}</span>
           </button>
         </div>
       </div>
@@ -1262,6 +1306,7 @@ function renderEvacuate() {
 
   document.querySelectorAll("[data-arm-evac]").forEach((btn) => {
     btn.addEventListener("click", () => {
+      if (btn.disabled || !codesOpen) return;
       const id = btn.dataset.armEvac;
       const label = btn.dataset.label || id;
       const tone = btn.dataset.tone || evacCodeTone(id);
@@ -1277,7 +1322,9 @@ function renderEvacuate() {
       wireHoldConfirm($("[data-confirm-evac]"), () => {
         const loop = $("#evac-loop")?.checked;
         $("#evac-confirm").innerHTML = "";
-        void playAction(id, $("#play-msg"), 0, loop);
+        void playAction(id, $("#play-msg"), 0, loop).then(() => {
+          /* phase updates via API response / Ably */
+        });
       });
       $("[data-cancel-evac]")?.addEventListener("click", () => {
         $("#evac-confirm").innerHTML = "";
@@ -1287,10 +1334,11 @@ function renderEvacuate() {
   });
 
   $("#evac-all-clear")?.addEventListener("click", () => {
+    if (!clearOpen) return;
     $("#evac-confirm").innerHTML = `
       <div class="confirm-box confirm-box--green stack confirm-safe">
         <button type="button" class="btn btn-ghost btn-block" data-cancel-evac>Cancel</button>
-        <p style="margin:0;text-align:center">Issue <strong>All clear</strong>? Code Green plays <strong>twice</strong>. End any lockdown loop first.</p>
+        <p style="margin:0;text-align:center">Issue <strong>All clear</strong>? Start tone, then Code Green <strong>twice</strong>. Ends the active code.</p>
         <button type="button" class="btn btn-code-green btn-block btn-hold" id="confirm-all-clear" aria-label="Hold to confirm all clear">
           <span class="btn-hold-fill"></span>
           <span class="btn-hold-label">Hold to confirm all clear</span>

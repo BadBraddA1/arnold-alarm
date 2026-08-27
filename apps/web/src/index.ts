@@ -23,6 +23,10 @@ import {
   getGatewayHeartbeat,
   getSystemArmed,
   setSystemArmed,
+  getEvacPhase,
+  setEvacPhase,
+  evacActionAllowedForPhase,
+  evacPhaseForAction,
   updateAuditStatus,
   updatePinScopes,
 } from "./db";
@@ -69,6 +73,43 @@ function randomTempPin(): string {
 
 const UNARMED_MSG =
   "System is unarmed — command recorded, speakers will not play until an admin arms the system.";
+
+async function publishEvacPhase(
+  env: Env,
+  phase: "idle" | "red" | "blue",
+  by?: string,
+) {
+  await publishSystemEvent(env, "evac", { phase, by, at: Date.now() });
+}
+
+async function beginEvacCode(
+  env: Env,
+  actionId: string,
+  by?: string,
+): Promise<{ ok: true; phase: "idle" | "red" | "blue" } | { ok: false; error: string }> {
+  const phase = await getEvacPhase(env);
+  const gate = evacActionAllowedForPhase(actionId, phase);
+  if (!gate.ok) return gate;
+  const next = evacPhaseForAction(actionId);
+  if (next) {
+    await setEvacPhase(env, next);
+    await publishEvacPhase(env, next, by);
+    return { ok: true, phase: next };
+  }
+  return { ok: true, phase };
+}
+
+async function clearEvacCode(
+  env: Env,
+  by?: string,
+): Promise<{ ok: true; phase: "idle" } | { ok: false; error: string }> {
+  const phase = await getEvacPhase(env);
+  const gate = evacActionAllowedForPhase("__all_clear__", phase);
+  if (!gate.ok) return gate;
+  await setEvacPhase(env, "idle");
+  await publishEvacPhase(env, "idle", by);
+  return { ok: true, phase: "idle" };
+}
 
 async function holdUnarmedPlay(
   env: Env,
@@ -124,9 +165,11 @@ app.use("*", async (c, next) => {
 app.get("/api/config", async (c) => {
   const evacuateActions = parseActionList(c.env.EVACUATE_ACTIONS);
   const armed = await getSystemArmed(c.env);
+  const evacPhase = await getEvacPhase(c.env);
   return c.json({
     gatewayUrl: c.env.GATEWAY_URL,
     armed,
+    evacPhase,
     bellActions: parseActionList(c.env.BELL_ACTIONS),
     evacuateActions:
       evacuateActions.length > 0
@@ -141,7 +184,8 @@ app.get("/api/config", async (c) => {
 /** Public arm status for gateway SIP PA (no secrets). */
 app.get("/api/system", async (c) => {
   const armed = await getSystemArmed(c.env);
-  return c.json({ armed });
+  const evacPhase = await getEvacPhase(c.env);
+  return c.json({ armed, evacPhase });
 });
 
 /** Ably TokenRequest for signed-in staff — subscribe to live arm/activity. */
@@ -307,17 +351,33 @@ app.post("/api/play-token", async (c) => {
     return c.json(await holdUnarmedPlay(c.env, session, actionId, "lan"));
   }
 
+  if (
+    actionId === "__all_clear__" ||
+    evacPhaseForAction(actionId) ||
+    actionId === "evacuate.code_green"
+  ) {
+    if (actionId === "__all_clear__" || actionId === "evacuate.code_green") {
+      const cleared = await clearEvacCode(c.env, session.label);
+      if (!cleared.ok) return c.json({ error: cleared.error }, 409);
+    } else {
+      const started = await beginEvacCode(c.env, actionId, session.label);
+      if (!started.ok) return c.json({ error: started.error }, 409);
+    }
+  }
+
   const token = await signPlayToken(c.env, {
     pinId: session.pinId,
     scopes: session.scopes,
     actionId,
   });
+  const evacPhase = await getEvacPhase(c.env);
   return c.json({
     token,
     gatewayUrl: c.env.GATEWAY_URL,
     expiresInSec: 60,
     canRemote: hasScope(session.scopes, "remote"),
     armed: true,
+    evacPhase,
   });
 });
 
@@ -370,6 +430,11 @@ app.post("/api/play-remote", async (c) => {
     );
   }
 
+  if (evacPhaseForAction(actionId)) {
+    const started = await beginEvacCode(c.env, actionId, session.label);
+    if (!started.ok) return c.json({ error: started.error }, 409);
+  }
+
   const id = crypto.randomUUID();
   const fireAt =
     delayMinutes > 0
@@ -410,6 +475,7 @@ app.post("/api/play-remote", async (c) => {
     id,
     mode: "remote",
     armed: true,
+    evacPhase: await getEvacPhase(c.env),
     status: delayMinutes > 0 ? "scheduled" : "queued",
     fireAt,
     message:
@@ -478,6 +544,9 @@ app.post("/api/stop-remote", async (c) => {
     );
   }
 
+  const cleared = await clearEvacCode(c.env, session.label);
+  if (!cleared.ok) return c.json({ error: cleared.error }, 409);
+
   const id = crypto.randomUUID();
   await enqueuePlay(c.env, {
     id,
@@ -505,8 +574,9 @@ app.post("/api/stop-remote", async (c) => {
   return c.json({
     ok: true,
     status: "queued",
+    evacPhase: "idle",
     message:
-      "All clear queued on campus — not playing yet. Code Green ×2 starts when the gateway picks it up.",
+      "All clear queued on campus — not playing yet. Start tone + Code Green ×2 when the gateway picks it up.",
   });
 });
 
@@ -594,6 +664,18 @@ app.post("/api/gateway/ivr-alarm", async (c) => {
     });
   }
 
+  if (actionId === "__all_clear__") {
+    const cleared = await clearEvacCode(c.env, matched.label);
+    if (!cleared.ok) {
+      return c.json({ error: "phase_blocked", message: cleared.error }, 409);
+    }
+  } else if (evacPhaseForAction(actionId)) {
+    const started = await beginEvacCode(c.env, actionId, matched.label);
+    if (!started.ok) {
+      return c.json({ error: "phase_blocked", message: started.error }, 409);
+    }
+  }
+
   await insertAudit(c.env, {
     id,
     actionId,
@@ -603,6 +685,12 @@ app.post("/api/gateway/ivr-alarm", async (c) => {
     status: "done",
     detail: "phone IVR — playing on campus",
   });
+  await publishSystemEvent(c.env, "activity", {
+    id,
+    actionId,
+    status: "done",
+    at: Date.now(),
+  });
   return c.json({
     ok: true,
     armed: true,
@@ -611,6 +699,7 @@ app.post("/api/gateway/ivr-alarm", async (c) => {
     actionId,
     label: matched.label,
     playLocal: true,
+    evacPhase: await getEvacPhase(c.env),
   });
 });
 

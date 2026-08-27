@@ -352,3 +352,60 @@ export async function setSystemArmed(env: Env, armed: boolean) {
     .bind(armed ? "1" : "0")
     .run();
 }
+
+export type EvacPhase = "idle" | "red" | "blue";
+
+export async function getEvacPhase(env: Env): Promise<EvacPhase> {
+  const row = await env.DB.prepare(
+    `SELECT value FROM system_settings WHERE key = 'evac_phase'`,
+  ).first<{ value: string }>();
+  const v = (row?.value || "idle").toLowerCase();
+  if (v === "red" || v === "blue") return v;
+  return "idle";
+}
+
+export async function setEvacPhase(env: Env, phase: EvacPhase) {
+  await env.DB.prepare(
+    `INSERT INTO system_settings (key, value) VALUES ('evac_phase', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  )
+    .bind(phase)
+    .run();
+}
+
+/** Map evacuate action ids to phase transitions / gates. */
+export function evacPhaseForAction(actionId: string): EvacPhase | null {
+  if (actionId === "evacuate.code_red" || actionId === "evacuate.main") return "red";
+  if (actionId === "evacuate.code_blue") return "blue";
+  return null;
+}
+
+export function evacActionAllowedForPhase(
+  actionId: string,
+  phase: EvacPhase,
+): { ok: true } | { ok: false; error: string } {
+  const isAllClear =
+    actionId === "__all_clear__" || actionId === "evacuate.code_green";
+  const next = evacPhaseForAction(actionId);
+  if (isAllClear) {
+    if (phase === "idle") {
+      return {
+        ok: false,
+        error:
+          "All clear is only available after Code Red or Code Blue has been issued.",
+      };
+    }
+    return { ok: true };
+  }
+  if (next) {
+    if (phase !== "idle") {
+      return {
+        ok: false,
+        error:
+          "A code is already active. Issue Stop & All clear before starting another.",
+      };
+    }
+    return { ok: true };
+  }
+  return { ok: true };
+}

@@ -75,6 +75,7 @@ async function runAction(
     if (!def) {
       throw Object.assign(new Error("All clear action not configured"), { status: 500 });
     }
+    // Prefer sequence (start tone → Code Green ×2). Fall back to tone + green.
     await triggerAction(def, { actionId: "evacuate.code_green" });
     return;
   }

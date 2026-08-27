@@ -26,7 +26,7 @@ export async function createSystemTokenRequest(
 
 export async function publishSystemEvent(
   env: Env,
-  name: "armed" | "activity",
+  name: "armed" | "activity" | "evac",
   data: Record<string, unknown>,
 ): Promise<void> {
   const rest = getRest(env);
