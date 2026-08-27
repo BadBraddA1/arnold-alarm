@@ -16,6 +16,10 @@ let state = {
 };
 
 let idleTimer = null;
+/** @type {import("ably").Realtime | null} */
+let ablyRealtime = null;
+let ablyChannelName = "arnold-alarm:system";
+let systemPollTimer = null;
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -41,9 +45,11 @@ function setSessionFromAuth(data) {
   state.idleSec = data.idleSec || 30 * 60;
   touchActivity();
   armIdleWatch();
+  void ensureLiveSync();
 }
 
 async function forceLogout(reason) {
+  stopLiveSync();
   try {
     await api("/api/auth/logout", { method: "POST" });
   } catch {
@@ -175,6 +181,136 @@ function armBadge() {
   return armed
     ? `<span class="arm-pill arm-pill--on" title="Speakers will play">Armed</span>`
     : `<span class="arm-pill arm-pill--off" title="Commands recorded; speakers silent">Unarmed</span>`;
+}
+
+/** Apply arm state from Ably/poll without requiring a full page reload. */
+function applyArmedState(armed, meta = {}) {
+  if (!state.config) state.config = {};
+  const next = armed !== false;
+  const prev = state.config.armed !== false;
+  state.config.armed = next;
+  document.querySelectorAll(".brand-row").forEach((row) => {
+    const old = row.querySelector(".arm-pill");
+    if (!old) return;
+    const wrap = document.createElement("div");
+    wrap.innerHTML = armBadge();
+    old.replaceWith(wrap.firstElementChild);
+  });
+  if (state.route === "home" && prev !== next) {
+    renderHome();
+    if (meta.message) {
+      state.message = { kind: "ok", text: meta.message };
+    }
+  } else if (meta.by && prev !== next) {
+    // Soft notice on other panels
+    const row = document.querySelector(".status-row");
+    if (row && !row.dataset.armFlash) {
+      row.dataset.armFlash = "1";
+      const span = row.querySelector("span:last-child");
+      const prevText = span?.textContent;
+      if (span) {
+        span.textContent = next
+          ? `Armed by ${meta.by}`
+          : `Unarmed by ${meta.by}`;
+        setTimeout(() => {
+          delete row.dataset.armFlash;
+          paintStatusRow();
+          if (span && prevText != null) span.textContent = statusCopy()[1];
+        }, 2500);
+      }
+    }
+  }
+}
+
+function stopLiveSync() {
+  if (systemPollTimer) {
+    clearInterval(systemPollTimer);
+    systemPollTimer = null;
+  }
+  try {
+    ablyRealtime?.close();
+  } catch {
+    /* ignore */
+  }
+  ablyRealtime = null;
+}
+
+async function ensureLiveSync() {
+  if (!state.session || state.session.mustChangePin) return;
+
+  if (!systemPollTimer) {
+    systemPollTimer = setInterval(() => {
+      void pollSystemArmed();
+    }, 12_000);
+  }
+
+  if (ablyRealtime) return;
+
+  try {
+    const { res, data } = await api("/api/ably/token");
+    if (!res.ok || !data.tokenRequest) return;
+    if (data.channel) ablyChannelName = data.channel;
+
+    await loadAblySdk();
+    const Ably = window.Ably;
+    if (!Ably?.Realtime) return;
+
+    const client = new Ably.Realtime({
+      authCallback: (_tokenParams, callback) => {
+        api("/api/ably/token")
+          .then(({ res: r, data: d }) => {
+            if (!r.ok || !d.tokenRequest) {
+              callback("token failed", null);
+              return;
+            }
+            callback(null, d.tokenRequest);
+          })
+          .catch(() => callback("token failed", null));
+      },
+    });
+    ablyRealtime = client;
+    const channel = client.channels.get(ablyChannelName);
+    channel.subscribe("armed", (msg) => {
+      const payload = msg.data || {};
+      applyArmedState(payload.armed !== false, {
+        by: payload.by,
+        message:
+          payload.armed === false
+            ? `System unarmed${payload.by ? ` by ${payload.by}` : ""}.`
+            : `System armed${payload.by ? ` by ${payload.by}` : ""}.`,
+      });
+      if (state.route === "home") void loadAudit();
+    });
+    channel.subscribe("activity", () => {
+      if (state.route === "home") void loadAudit();
+    });
+  } catch (err) {
+    console.warn("[live] Ably unavailable — using poll fallback", err);
+  }
+}
+
+function loadAblySdk() {
+  if (window.Ably) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.ably.com/lib/ably.min-2.js";
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Failed to load Ably SDK"));
+    document.head.appendChild(s);
+  });
+}
+async function pollSystemArmed() {
+  if (!state.session) return;
+  try {
+    const { res, data } = await api("/api/system");
+    if (!res.ok) return;
+    if (typeof data.armed === "boolean") {
+      applyArmedState(data.armed);
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
 function header(label) {
@@ -394,6 +530,9 @@ async function toggleArmed() {
     return;
   }
   if (state.config) state.config.armed = data.armed;
+  applyArmedState(data.armed, {
+    message: data.message || (data.armed ? "System armed." : "System unarmed."),
+  });
   state.message = { kind: "ok", text: data.message || (data.armed ? "System armed." : "System unarmed.") };
   renderHome();
 }

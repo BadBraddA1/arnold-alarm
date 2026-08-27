@@ -1,3 +1,4 @@
+import { publishSystemEvent, createSystemTokenRequest } from "./ably";
 import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import bcrypt from "bcryptjs";
@@ -86,6 +87,12 @@ async function holdUnarmedPlay(
     status: "held",
     detail: detail ? `${detail} · unarmed` : "unarmed — not played",
   });
+  await publishSystemEvent(env, "activity", {
+    id,
+    actionId,
+    status: "held",
+    at: Date.now(),
+  });
   return {
     ok: true,
     armed: false,
@@ -135,6 +142,25 @@ app.get("/api/config", async (c) => {
 app.get("/api/system", async (c) => {
   const armed = await getSystemArmed(c.env);
   return c.json({ armed });
+});
+
+/** Ably TokenRequest for signed-in staff — subscribe to live arm/activity. */
+app.get("/api/ably/token", async (c) => {
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  if (!c.env.ABLY_API_KEY) {
+    return c.json({ error: "Live sync not configured." }, 503);
+  }
+  try {
+    const tokenRequest = await createSystemTokenRequest(
+      c.env,
+      `pin:${session.pinId}`,
+    );
+    return c.json({ tokenRequest, channel: "arnold-alarm:system" });
+  } catch (err) {
+    console.error("[ably/token]", err);
+    return c.json({ error: "Could not create live token." }, 500);
+  }
 });
 
 app.get("/api/auth/session", (c) => {
@@ -373,6 +399,12 @@ app.post("/api/play-remote", async (c) => {
       .filter(Boolean)
       .join(" · ") || undefined,
   });
+  await publishSystemEvent(c.env, "activity", {
+    id,
+    actionId,
+    status: delayMinutes > 0 ? "scheduled" : "queued",
+    at: Date.now(),
+  });
   return c.json({
     ok: true,
     id,
@@ -463,6 +495,12 @@ app.post("/api/stop-remote", async (c) => {
     mode: "remote",
     status: "queued",
     detail: "stop + all clear",
+  });
+  await publishSystemEvent(c.env, "activity", {
+    id,
+    actionId: "__all_clear__",
+    status: "queued",
+    at: Date.now(),
   });
   return c.json({
     ok: true,
@@ -693,6 +731,12 @@ app.post("/api/audit", async (c) => {
     status: body.status || "done",
     detail: body.detail,
   });
+  await publishSystemEvent(c.env, "activity", {
+    id,
+    actionId,
+    status: body.status || "done",
+    at: Date.now(),
+  });
   return c.json({ ok: true, id });
 });
 
@@ -797,14 +841,26 @@ app.post("/api/admin/armed", async (c) => {
     return c.json({ error: "armed (boolean) required" }, 400);
   }
   await setSystemArmed(c.env, body.armed);
+  const auditId = crypto.randomUUID();
   await insertAudit(c.env, {
-    id: crypto.randomUUID(),
+    id: auditId,
     actionId: body.armed ? "__system_armed__" : "__system_unarmed__",
     label: session.label,
     pinId: session.pinId,
     mode: "admin",
     status: "done",
     detail: body.armed ? "system armed" : "system unarmed — plays held",
+  });
+  await publishSystemEvent(c.env, "armed", {
+    armed: body.armed,
+    by: session.label,
+    at: Date.now(),
+  });
+  await publishSystemEvent(c.env, "activity", {
+    id: auditId,
+    actionId: body.armed ? "__system_armed__" : "__system_unarmed__",
+    status: "done",
+    at: Date.now(),
   });
   return c.json({
     ok: true,

@@ -24,6 +24,8 @@ export type Env = {
   GATEWAY_URL: string;
   BELL_ACTIONS: string;
   EVACUATE_ACTIONS: string;
+  /** Optional — live arm/activity sync across devices */
+  ABLY_API_KEY?: string;
 };
 
 /** Page access: admin implies bells/evacuate. Remote is never implied — must be granted. */
