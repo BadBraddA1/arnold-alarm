@@ -112,7 +112,7 @@ Emergency + bell clips use Protect **ringtones** (`PLAY_SPEAKER` on all speaker 
 - **Mid-clip stop:** Protect **ringtones cannot be cut mid-play**. `Stop` only aborts **talkback** streams. All clear stops talkback (if any) then plays Code Green ×2. Accept for ringtone path; revisit only if we need talkback mid-stop again.
 - **Ringtone ID validation:** gateway checks the NVR ringtone list before play (bad IDs used to return HTTP 200 and silence).
 - **PWA:** Add to Home Screen on iPhone (Share → Add to Home Screen). Manifest + icons ship with the Worker assets.
-- **SIP PA (ext 1010):** convenience paging only — never a substitute for Code Red / Blue / All clear.
+- **SIP PA (ext 9090):** convenience paging only — never a substitute for Code Red / Blue / All clear.
 
 ## Empty-campus verification (when people leave)
 
@@ -124,11 +124,11 @@ No need to re-test speakers for UI work. When the building is empty, re-verify o
 
 ## Convenience PA (SIP dial-in — not emergency)
 
-Office dials **1010** → live PA on campus speakers. Dial **1011** → SIP test only (Pi speaks a short prompt back to your phone; **speakers stay silent**). **Do not use for lockdown / evacuate.**
+Office dials **9090** → live PA on campus speakers. Dial **9099** → SIP test only (Pi speaks a short prompt back to your phone; **speakers stay silent**). **Do not use for lockdown / evacuate.**
 
 ```
-Talk / softphone → sip:1010@alarm-gw → Protect talkback → speakers
-Talk / softphone → sip:1011@alarm-gw → prompt in earpiece only (no speakers)
+Talk / softphone → sip:9090@alarm-gw → Protect talkback → speakers
+Talk / softphone → sip:9099@alarm-gw → prompt in earpiece only (no speakers)
 ```
 
 Built into the Node gateway (`@vexyl.ai/sip`) — no Asterisk required.
@@ -145,20 +145,20 @@ Confirm:
 
 ```bash
 curl -s http://127.0.0.1:8787/health | jq .pa
-# enabled, listening, extension 1010, testExtension 1011, mode sip-ua
+# enabled, listening, extension 9090, testExtension 9099, mode sip-ua
 ```
 
-**Softphone test (safe):** dial `sip:1011@192.168.1.204` — hear the prompt, hang up. Speakers should stay quiet.
+**Softphone test (safe):** dial `sip:9099@192.168.1.204` — hear the prompt, hang up. Speakers should stay quiet.
 
-**Softphone PA:** dial `sip:1010@192.168.1.204` — speak, hang up (plays on campus speakers).
+**Softphone PA:** dial `sip:9090@192.168.1.204` — speak, hang up (plays on campus speakers).
 
 ### UniFi Talk wiring
 
 1. Talk → Settings → **Third-Party SIP Provider** → Custom → Pi LAN IP, UDP **5060**, **Register = No**.
-2. Add phone numbers **1010** (PA) and **1011** (SIP test) on that trunk.
-3. Test **1011** first from a desk phone (prompt in ear only), then **1010** for live PA.
+2. Prefer **Add Third-Party Device** (extension) over short codes on a trunk — Talk dials extensions more reliably than trunk DIDs.
+3. Softphone / trunk test numbers: **9099** (earpiece only), then **9090** (live PA).
 
-Env (`~/.config/arnold-alarm/gateway.env`): `PA_ENABLED=1`, `PA_EXT=1010`, `PA_TEST_EXT=1011`, `PA_SPEAKER_IDS=…`, optional `TALK_CONSOLE_IP` whitelist.
+Env (`~/.config/arnold-alarm/gateway.env`): `PA_ENABLED=1`, `PA_EXT=9090`, `PA_TEST_EXT=9099`, `PA_SPEAKER_IDS=…`. Do not set `TALK_CONSOLE_IP` unless you need an exact-IP allowlist (it blocks other Talk phones).
 
 ## Protect (optional backup / custom clips)
 

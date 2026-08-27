@@ -1,8 +1,8 @@
 /**
- * Convenience PA: answer SIP dial of extension (default 1010) and stream
+ * Convenience PA: answer SIP dial of extension (default 9090) and stream
  * caller audio live to Protect talkback. NOT for emergency codes.
  *
- * Extension 1011 (PA_TEST_EXT): SIP-only loop — Pi speaks a prompt back to the
+ * Extension 9099 (PA_TEST_EXT): SIP-only loop — Pi speaks a prompt back to the
  * phone; campus speakers stay silent. Use for Talk / softphone path checks.
  *
  * Uses @vexyl.ai/sip (G.711 → PCM @ 8 kHz) so no Asterisk is required on Debian 13.
@@ -51,8 +51,8 @@ let stack: {
 } | null = null;
 let activeCalls = 0;
 let listenPort = 5060;
-let extension = "1010";
-let testExtension = "1011";
+let extension = "9090";
+let testExtension = "9099";
 
 function detectLanIp(): string {
   const fromEnv = process.env.PA_PUBLIC_IP || process.env.PA_BIND_IP;
@@ -120,7 +120,7 @@ function extractCalledUser(dialog: SipDialog): string {
 
   for (const c of candidates) {
     const raw = String(c).trim();
-    // sip:1011@host or sip:1011;user=phone
+    // sip:9099@host or sip:9099;user=phone
     const sipUser = raw.match(/^sip:([^@;>\s]+)/i);
     if (sipUser?.[1]) {
       try {
@@ -312,8 +312,8 @@ export async function startPaAudioSocket(): Promise<void> {
     return;
   }
 
-  extension = process.env.PA_EXT || process.env.PA_EXTENSION || "1010";
-  testExtension = process.env.PA_TEST_EXT || "1011";
+  extension = process.env.PA_EXT || process.env.PA_EXTENSION || "9090";
+  testExtension = process.env.PA_TEST_EXT || "9099";
   listenPort = Number(process.env.PA_SIP_PORT || process.env.PA_AUDIOSOCKET_PORT || 5060);
   // If someone left AudioSocket port 9092, prefer real SIP 5060
   if (listenPort === 9092) listenPort = 5060;
@@ -321,7 +321,7 @@ export async function startPaAudioSocket(): Promise<void> {
   const speakerIds = parseSpeakerIds();
   if (!speakerIds.length) {
     console.warn(
-      "[pa] no PA_SPEAKER_IDS — live PA (1010) disabled; SIP test ext still available",
+      "[pa] no PA_SPEAKER_IDS — live PA (9090) disabled; SIP test ext still available",
     );
   }
 

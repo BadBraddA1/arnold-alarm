@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Enable convenience PA on the gateway: SIP dial PA_EXT (default 1010) → live talkback.
-# PA_TEST_EXT (default 1011) answers with a phone-only prompt (no speakers).
+# Enable convenience PA on the gateway: SIP dial PA_EXT (default 9090) → live talkback.
+# PA_TEST_EXT (default 9099) answers with a phone-only prompt (no speakers).
 # Built into the Node gateway (no Asterisk). NOT for emergency use.
 set -euo pipefail
 
 ENV_FILE="${HOME}/.config/arnold-alarm/gateway.env"
-PA_EXT="${PA_EXT:-1010}"
-PA_TEST_EXT="${PA_TEST_EXT:-1011}"
+PA_EXT="${PA_EXT:-9090}"
+PA_TEST_EXT="${PA_TEST_EXT:-9099}"
 TALK_IP="${TALK_CONSOLE_IP:-$(ip -4 route 2>/dev/null | awk '/default/ {print $3; exit}')}"
 SPEAKERS="${PA_SPEAKER_IDS:-}"
 
