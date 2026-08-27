@@ -373,7 +373,12 @@ export async function setEvacPhase(env: Env, phase: EvacPhase) {
     .run();
 }
 
-export type VolumeSettings = { bells: number; evac: number };
+export type VolumeSettings = {
+  bells: number;
+  evac: number;
+  /** Per-speaker class-bell volume overrides (Protect speaker id → 20–100). */
+  bellsBySpeaker: Record<string, number>;
+};
 
 function clampVol(n: number, min: number, max: number, fallback: number) {
   const v = Math.round(Number(n));
@@ -381,22 +386,43 @@ function clampVol(n: number, min: number, max: number, fallback: number) {
   return Math.min(max, Math.max(min, v));
 }
 
+function parseBellsBySpeaker(raw: string | null | undefined): Record<string, number> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    for (const [id, val] of Object.entries(parsed || {})) {
+      if (!id) continue;
+      out[id] = clampVol(Number(val), 20, 100, 60);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export async function getVolumeSettings(env: Env): Promise<VolumeSettings> {
   const { results } = await env.DB.prepare(
-    `SELECT key, value FROM system_settings WHERE key IN ('bell_volume', 'evac_volume')`,
+    `SELECT key, value FROM system_settings WHERE key IN ('bell_volume', 'evac_volume', 'bell_volumes_by_speaker')`,
   ).all<{ key: string; value: string }>();
   let bells = 60;
   let evac = 100;
+  let bellsBySpeaker: Record<string, number> = {};
   for (const row of results ?? []) {
     if (row.key === "bell_volume") bells = clampVol(Number(row.value), 20, 100, 60);
     if (row.key === "evac_volume") evac = clampVol(Number(row.value), 50, 100, 100);
+    if (row.key === "bell_volumes_by_speaker") {
+      bellsBySpeaker = parseBellsBySpeaker(row.value);
+    }
   }
-  return { bells, evac };
+  return { bells, evac, bellsBySpeaker };
 }
 
 export async function setVolumeSettings(
   env: Env,
-  next: Partial<VolumeSettings>,
+  next: Partial<VolumeSettings> & {
+    bellsBySpeaker?: Record<string, number>;
+  },
 ): Promise<VolumeSettings> {
   const cur = await getVolumeSettings(env);
   const bells =
@@ -407,6 +433,14 @@ export async function setVolumeSettings(
     typeof next.evac === "number"
       ? clampVol(next.evac, 50, 100, cur.evac)
       : cur.evac;
+  let bellsBySpeaker = cur.bellsBySpeaker;
+  if (next.bellsBySpeaker && typeof next.bellsBySpeaker === "object") {
+    bellsBySpeaker = {};
+    for (const [id, val] of Object.entries(next.bellsBySpeaker)) {
+      if (!id) continue;
+      bellsBySpeaker[id] = clampVol(Number(val), 20, 100, bells);
+    }
+  }
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO system_settings (key, value) VALUES ('bell_volume', ?)
@@ -416,8 +450,12 @@ export async function setVolumeSettings(
       `INSERT INTO system_settings (key, value) VALUES ('evac_volume', ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
     ).bind(String(evac)),
+    env.DB.prepare(
+      `INSERT INTO system_settings (key, value) VALUES ('bell_volumes_by_speaker', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).bind(JSON.stringify(bellsBySpeaker)),
   ]);
-  return { bells, evac };
+  return { bells, evac, bellsBySpeaker };
 }
 
 export type SpeakerStatusRow = {

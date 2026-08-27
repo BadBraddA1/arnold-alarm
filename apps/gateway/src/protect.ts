@@ -256,38 +256,68 @@ export function clampSpeakerVolume(n: number, min = 20, max = 100): number {
 export type VolumeProfile = {
   bells: number;
   evac: number;
+  bellsBySpeaker: Record<string, number>;
 };
 
-let volumeProfile: VolumeProfile = { bells: 60, evac: 100 };
+let volumeProfile: VolumeProfile = { bells: 60, evac: 100, bellsBySpeaker: {} };
 
-export function setVolumeProfile(next: Partial<VolumeProfile>) {
+export function setVolumeProfile(
+  next: Partial<VolumeProfile> & { bellsBySpeaker?: Record<string, number> },
+) {
   if (typeof next.bells === "number") {
     volumeProfile.bells = clampSpeakerVolume(next.bells, 20, 100);
   }
   if (typeof next.evac === "number") {
     volumeProfile.evac = clampSpeakerVolume(next.evac, 50, 100);
   }
+  if (next.bellsBySpeaker && typeof next.bellsBySpeaker === "object") {
+    const map: Record<string, number> = {};
+    for (const [id, val] of Object.entries(next.bellsBySpeaker)) {
+      if (!id) continue;
+      map[id] = clampSpeakerVolume(Number(val), 20, 100);
+    }
+    volumeProfile.bellsBySpeaker = map;
+  }
 }
 
 export function getVolumeProfile(): VolumeProfile {
-  return { ...volumeProfile };
+  return {
+    bells: volumeProfile.bells,
+    evac: volumeProfile.evac,
+    bellsBySpeaker: { ...volumeProfile.bellsBySpeaker },
+  };
 }
 
-/** Bells use quieter profile; everything else (evac, test, PA, all clear) uses full. */
+/** Default / ringtone volume for an action (evac full; bells use default). */
 export function volumeForAction(actionId: string): number {
   if (actionId.startsWith("bells.")) return volumeProfile.bells;
   return volumeProfile.evac;
 }
 
-export async function setAllSpeakerVolumes(volume: number): Promise<void> {
+function bellVolumeForSpeaker(speakerId: string): number {
+  const override = volumeProfile.bellsBySpeaker[speakerId];
+  if (typeof override === "number") {
+    return clampSpeakerVolume(override, 20, 100);
+  }
+  return volumeProfile.bells;
+}
+
+export async function setSpeakerVolumes(
+  volumes: Record<string, number> | number,
+): Promise<void> {
   const apiKey = process.env.PROTECT_API_KEY;
   if (!apiKey) throw new Error("PROTECT_API_KEY required to set speaker volume");
-  const target = clampSpeakerVolume(volume, 0, 100);
   const speakers = await listProtectSpeakers();
   if (!speakers.length) throw new Error("No speakers found");
   const errors: string[] = [];
+  const uniform = typeof volumes === "number";
   await Promise.all(
     speakers.map(async (s) => {
+      const target = clampSpeakerVolume(
+        uniform ? volumes : (volumes[s.id] ?? volumeProfile.evac),
+        0,
+        100,
+      );
       if (s.volume === target) return;
       const result = await insecureFetch(
         `${protectBase()}/proxy/protect/integration/v1/speakers/${encodeURIComponent(s.id)}`,
@@ -310,21 +340,35 @@ export async function setAllSpeakerVolumes(volume: number): Promise<void> {
     throw new Error(`Set volume failed: ${errors.join("; ")}`);
   }
   if (errors.length) {
-    console.warn(`[volume] partial set to ${target}:`, errors);
+    console.warn(`[volume] partial set:`, errors);
+  } else if (uniform) {
+    console.log(`[volume] speakers → ${volumes}`);
   } else {
-    console.log(`[volume] speakers → ${target}`);
+    console.log(`[volume] per-speaker map applied (${speakers.length})`);
   }
 }
 
-/** Lower for bells during play, then restore emergency level so idle stays loud-ready. */
+/** @deprecated use setSpeakerVolumes */
+export async function setAllSpeakerVolumes(volume: number): Promise<void> {
+  await setSpeakerVolumes(volume);
+}
+
+/** Lower for bells during play (per speaker), then restore emergency level. */
 export async function withActionVolume<T>(
   actionId: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const playVol = volumeForAction(actionId);
+  const isBells = actionId.startsWith("bells.");
   const restoreVol = volumeProfile.evac;
   try {
-    await setAllSpeakerVolumes(playVol);
+    if (isBells) {
+      const speakers = await listProtectSpeakers();
+      const map: Record<string, number> = {};
+      for (const s of speakers) map[s.id] = bellVolumeForSpeaker(s.id);
+      await setSpeakerVolumes(map);
+    } else {
+      await setSpeakerVolumes(restoreVol);
+    }
   } catch (err) {
     console.warn(
       "[volume] pre-play set failed",
@@ -334,9 +378,9 @@ export async function withActionVolume<T>(
   try {
     return await fn();
   } finally {
-    if (playVol !== restoreVol) {
+    if (isBells) {
       try {
-        await setAllSpeakerVolumes(restoreVol);
+        await setSpeakerVolumes(restoreVol);
       } catch (err) {
         console.warn(
           "[volume] restore failed",

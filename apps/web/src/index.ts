@@ -1047,15 +1047,24 @@ app.post("/api/admin/volumes", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {
     bells?: number;
     evac?: number;
+    bellsBySpeaker?: Record<string, number>;
   };
   const volumes = await setVolumeSettings(c.env, {
     bells: typeof body.bells === "number" ? body.bells : undefined,
     evac: typeof body.evac === "number" ? body.evac : undefined,
+    bellsBySpeaker:
+      body.bellsBySpeaker && typeof body.bellsBySpeaker === "object"
+        ? body.bellsBySpeaker
+        : undefined,
   });
+  const per = Object.keys(volumes.bellsBySpeaker).length;
   return c.json({
     ok: true,
     volumes,
-    message: `Bell volume ${volumes.bells}% · Emergency ${volumes.evac}% (applies on next campus play).`,
+    message:
+      per > 0
+        ? `Saved: ${per} speaker bell level(s), emergency ${volumes.evac}% (next campus play).`
+        : `Bell default ${volumes.bells}% · Emergency ${volumes.evac}% (next campus play).`,
   });
 });
 

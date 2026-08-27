@@ -134,7 +134,7 @@ Sequence example (second bell):
 - **Code Red** / **Code Blue:** tap starts a **10s phone alarm** (campus silent). Arming takes over the screen — **Send now** / **Cancel** stay in view (no scroll). Phone alarm uses media playback so it still sounds with the iPhone silent switch on (volume buttons). Auto-send at 0. Then loop until All clear. Only one code at a time; All clear grayed until a code is active.
 - **Stop & All clear** is green (Code Green ×2 only — not a direct Code Green play button).
 - **Admin** panel: arm/disarm, live speaker status (from Protect), volume profiles, speaker check, and staff PIN management.
-- **Volume profiles:** class bells play at a quieter Protect volume (default **60%**); emergency / all clear / speaker check / PA use full (**100%**). Speakers restore to emergency level after each bell so idle stays loud-ready.
+- **Volume profiles:** Admin can set **class bell volume per speaker** (plus a default for new horns). Emergency / all clear / speaker check / PA use the emergency level (default **100%**). Speakers restore to emergency level after each bell.
 
 ## Ops / safety notes
 

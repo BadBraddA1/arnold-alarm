@@ -561,18 +561,16 @@ button, input { font: inherit; }
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
+  gap: 0.65rem;
 }
 .speaker-row {
   display: grid;
   grid-template-columns: auto 1fr;
-  grid-template-rows: auto auto;
   column-gap: 0.55rem;
-  row-gap: 0.1rem;
-  align-items: center;
+  align-items: start;
 }
 .speaker-dot {
-  grid-row: 1 / span 2;
+  margin-top: 0.45rem;
   width: 0.55rem;
   height: 0.55rem;
   border-radius: 50%;
@@ -580,8 +578,25 @@ button, input { font: inherit; }
 }
 .speaker-dot--ok { background: #2f9e44; }
 .speaker-dot--bad { background: #c92a2a; }
+.speaker-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
 .speaker-name { font-weight: 600; }
-.speaker-meta { font-size: 0.8rem; grid-column: 2; }
+.speaker-meta { font-size: 0.8rem; }
+.speaker-bell-vol {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-top: 0.25rem;
+  font-size: 0.85rem;
+}
+.speaker-bell-vol input[type="range"] {
+  width: 100%;
+  max-width: 18rem;
+}
 
 ::selection {
   background: color-mix(in oklab, var(--accent) 45%, transparent);

@@ -1544,6 +1544,9 @@ function renderEvacuate() {
 
 function speakerStatusHtml(data) {
   const speakers = data.speakers || [];
+  const volumes = data.volumes || {};
+  const bySpeaker = volumes.bellsBySpeaker || {};
+  const defaultBell = Number(volumes.bells ?? 60);
   if (!speakers.length) {
     return `<p class="muted" style="margin:0">No speaker report yet — gateway will publish within a few seconds when online.</p>`;
   }
@@ -1551,10 +1554,18 @@ function speakerStatusHtml(data) {
     .map((s) => {
       const ok = String(s.state || "").toUpperCase() === "CONNECTED";
       const activity = s.speakerStatus || "—";
+      const bellVol =
+        typeof bySpeaker[s.id] === "number" ? bySpeaker[s.id] : defaultBell;
       return `<li class="speaker-row">
         <span class="speaker-dot ${ok ? "speaker-dot--ok" : "speaker-dot--bad"}" title="${escapeHtml(s.state || "")}"></span>
-        <span class="speaker-name">${escapeHtml(s.name)}</span>
-        <span class="muted speaker-meta">${escapeHtml(String(s.state || "UNKNOWN"))} · vol ${Number(s.volume) || 0}% · ${escapeHtml(activity)}</span>
+        <div class="speaker-main">
+          <span class="speaker-name">${escapeHtml(s.name)}</span>
+          <span class="muted speaker-meta">${escapeHtml(String(s.state || "UNKNOWN"))} · now ${Number(s.volume) || 0}% · ${escapeHtml(activity)}</span>
+          <label class="speaker-bell-vol">
+            <span>Bell <strong class="bell-vol-val">${bellVol}%</strong></span>
+            <input type="range" min="20" max="100" step="5" value="${bellVol}" data-bell-speaker="${escapeHtml(s.id)}" />
+          </label>
+        </div>
       </li>`;
     })
     .join("")}</ul>`;
@@ -1564,12 +1575,21 @@ async function refreshAdminSpeakers() {
   const list = $("#speakers-list");
   const meta = $("#speakers-meta");
   if (!list) return;
+  const editing = document.activeElement?.matches?.("[data-bell-speaker], #bell-vol, #evac-vol");
   const { res, data } = await api("/api/admin/speakers");
   if (!res.ok) {
     list.innerHTML = `<p class="error-banner" style="margin:0">${escapeHtml(data.error || "Could not load speakers.")}</p>`;
     return;
   }
-  list.innerHTML = speakerStatusHtml(data);
+  if (!editing) {
+    list.innerHTML = speakerStatusHtml(data);
+    list.querySelectorAll("[data-bell-speaker]").forEach((input) => {
+      input.addEventListener("input", () => {
+        const label = input.closest("label")?.querySelector(".bell-vol-val");
+        if (label) label.textContent = `${input.value}%`;
+      });
+    });
+  }
   const gw = data.gateway?.online
     ? "Gateway online"
     : data.gateway?.ageSec != null
@@ -1613,10 +1633,15 @@ function wireAdminSpeakers() {
     const msg = $("#volume-msg");
     const bells = Number($("#bell-vol")?.value || 60);
     const evac = Number($("#evac-vol")?.value || 100);
+    const bellsBySpeaker = {};
+    document.querySelectorAll("[data-bell-speaker]").forEach((input) => {
+      const id = input.dataset.bellSpeaker;
+      if (id) bellsBySpeaker[id] = Number(input.value);
+    });
     if (msg) msg.innerHTML = `<p class="muted" style="margin:0">Saving…</p>`;
     const { res, data } = await api("/api/admin/volumes", {
       method: "POST",
-      body: JSON.stringify({ bells, evac }),
+      body: JSON.stringify({ bells, evac, bellsBySpeaker }),
     });
     if (!res.ok) {
       if (msg)
@@ -1680,12 +1705,12 @@ async function renderAdmin() {
           <div class="stack" style="gap:0.55rem;border-top:1px solid color-mix(in oklab, CanvasText 12%, transparent);padding-top:0.75rem">
             <p style="margin:0;font-weight:600">Volume profiles</p>
             <p class="muted" style="margin:0;font-size:0.85rem">
-              Class bells play quieter; emergency codes, all clear, speaker check, and PA stay at full.
-              Speakers return to emergency level after each bell.
+              Set <strong>Bell</strong> under each speaker above. Emergency / PA stays full on every horn.
+              Speakers restore to emergency level after each bell.
             </p>
             <label class="field" style="margin:0">
               <span style="display:flex;justify-content:space-between;gap:0.5rem">
-                <span>Class bells</span>
+                <span>Default bell (new speakers)</span>
                 <strong id="bell-vol-label">60%</strong>
               </span>
               <input type="range" id="bell-vol" min="20" max="100" step="5" value="60" />
