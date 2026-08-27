@@ -85,7 +85,7 @@ Emergency + bell clips use Protect **ringtones** (`PLAY_SPEAKER` on all speaker 
 | Code Green au | `6a3be77003a4b103e436e524` |
 | TEST ACOC | `6a3b089901a2b103e432add8` |
 
-**Test tone — all speakers** uses the Integration API test-sound endpoint (built-in tone), not a ringtone clip.
+**Speaker check / test mode** plays the Protect **TEST ACOC** ringtone on all AI speakers (same clip as Class bells → TEST ACOC). Source file on the Pi: `~/.config/arnold-alarm/audio/TEST_ACOC.ogg` (~16 sec). The old Protect built-in test-sound beep is no longer used for this button.
 
 `PROTECT_USER` / `PROTECT_PASS` must be a **local Protect admin** on the UNVR (Settings → Admins → local access). SSH `root` is not the same account.
 
@@ -104,7 +104,7 @@ Emergency + bell clips use Protect **ringtones** (`PLAY_SPEAKER` on all speaker 
 
 - **Code Red** / **Code Blue** in thumb reach (sticky bottom), color-matched; **hold to confirm** (Cancel sits above).
 - **Stop & All clear** is green (Code Green ×2 only — not a direct Code Green play button).
-- Test tone stays secondary under “Speaker check”.
+- **TEST ACOC** speaker check sits under “Speaker check / test mode” (and on Home).
 
 ## Ops / safety notes
 

@@ -323,6 +323,16 @@ function renderHome() {
               : ""
         }
         <div id="last-play" class="last-play muted">Loading last play…</div>
+        ${
+          canBells || canEvac
+            ? `<div class="card stack" style="gap:0.55rem;padding:1rem 1.1rem">
+                <p style="margin:0;font-weight:600">Speaker check</p>
+                <p class="muted" style="margin:0;font-size:0.85rem">Play <strong>TEST ACOC</strong> on every campus speaker while you walk the building.</p>
+                <button type="button" class="btn btn-ghost btn-block" id="home-test-speakers" style="min-height:2.5rem">TEST ACOC — all speakers</button>
+                <div id="home-test-msg"></div>
+              </div>`
+            : ""
+        }
         <div class="tile-grid">
           ${canBells ? `<button type="button" class="tile" data-go="bells"><h2>Class bells</h2><p>Play period and chapel tones on campus speakers.</p></button>` : ""}
           ${canEvac ? `<button type="button" class="tile" data-go="evacuate"><h2>Emergency codes</h2><p>Code Red, Blue, and Green announcements.</p></button>` : ""}
@@ -338,6 +348,9 @@ function renderHome() {
     </main>`;
   void loadAudit();
   $("#toggle-armed")?.addEventListener("click", () => void toggleArmed());
+  $("#home-test-speakers")?.addEventListener("click", () => {
+    void playAction("test.speakers", $("#home-test-msg"));
+  });
 }
 
 async function toggleArmed() {
@@ -461,7 +474,8 @@ function actionLabel(actionId) {
   const hit = [...bells, ...evacs].find((a) => a.id === actionId);
   if (actionId === "__all_clear__") return "Stop & All clear (Code Green ×2)";
   if (actionId === "__stop__") return "Stop speakers";
-  if (actionId === "test.speakers") return "Test tone — all speakers";
+  if (actionId === "test.speakers") return "TEST ACOC — speaker check";
+  if (actionId === "bells.test") return "TEST ACOC";
   if (actionId === "__system_armed__") return "System armed";
   if (actionId === "__system_unarmed__") return "System unarmed";
   return hit?.label || actionId;
@@ -583,8 +597,8 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
     }
     await logAudit(actionId, "lan", "done", loop ? "loop" : undefined);
     const playingMsg =
-      actionId === "test.speakers"
-        ? "Playing now — test tone on all speakers (walk the building)."
+      actionId === "test.speakers" || actionId === "bells.test"
+        ? "Playing now — TEST ACOC on all speakers (walk the building)."
         : loop
           ? "Playing now on campus speakers (looping until all clear)."
           : "Playing now on campus speakers.";
@@ -813,11 +827,11 @@ function renderEvacuate() {
         <div id="evac-confirm"></div>
         <div id="play-msg"></div>
         <div class="evac-speaker-check stack" style="gap:0.45rem">
-          <p class="evac-meta">Speaker check</p>
+          <p class="evac-meta">Speaker check / test mode</p>
           <button type="button" class="btn btn-ghost btn-block" data-play="test.speakers">
-            Test tone — all speakers
+            TEST ACOC — all speakers
           </button>
-          <p class="evac-meta" style="font-size:0.8rem">Built-in Protect test tone, one after another (~6 sec).</p>
+          <p class="evac-meta" style="font-size:0.8rem">Plays the campus TEST ACOC clip on every AI speaker (~16 sec). Use while walking the building.</p>
         </div>
       </div>
       <div class="evac-thumb-zone">
