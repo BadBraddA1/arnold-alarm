@@ -437,6 +437,7 @@ async function runLiveTalkbackSession(input: {
   pcmReadable: NodeJS.ReadableStream;
   pcmSampleRate: number;
   signal: AbortSignal;
+  onReady?: () => void;
 }): Promise<void> {
   const { cookie } = await getProtectAuthHeaders();
   const sockets = await openTalkbackSockets(
@@ -444,8 +445,11 @@ async function runLiveTalkbackSession(input: {
     cookie,
     input.signal,
   );
-  if (!sockets.length) return;
+  if (!sockets.length) {
+    throw new Error("No talkback speakers connected for live PA");
+  }
   try {
+    input.onReady?.();
     await streamLiveAdts(
       input.pcmReadable,
       sockets,
@@ -554,6 +558,8 @@ export async function startLiveTalkback(input: {
   pcmSampleRate?: number;
   /** Wait until the live stream ends (hangup / abort). */
   awaitDone?: boolean;
+  /** Fires once Protect talkback sockets are open. */
+  onReady?: () => void;
 }): Promise<void> {
   if (!input.speakerIds.length) {
     throw new Error("PA speakerIds required");
@@ -576,13 +582,31 @@ export async function startLiveTalkback(input: {
   state.repeat = 1;
   state.startedAt = Date.now();
 
+  let readyDone = false;
+  let readyResolve: () => void = () => {};
+  const readyP = new Promise<void>((resolve) => {
+    readyResolve = resolve;
+  });
+  const markReady = () => {
+    if (readyDone) return;
+    readyDone = true;
+    try {
+      input.onReady?.();
+    } catch {
+      /* ignore */
+    }
+    readyResolve();
+  };
+
   playbackPromise = runLiveTalkbackSession({
     speakerIds: input.speakerIds,
     pcmReadable: input.pcmReadable,
     pcmSampleRate: input.pcmSampleRate ?? 8000,
     signal: controller.signal,
+    onReady: markReady,
   })
     .catch((err) => {
+      markReady();
       if (!controller.signal.aborted) throw err;
     })
     .finally(() => {
@@ -597,10 +621,11 @@ export async function startLiveTalkback(input: {
       }
     });
 
+  await Promise.race([readyP, sleep(12_000)]);
+  await sleep(ARM_MS + 50);
+
   if (input.awaitDone) {
     await playbackPromise;
-  } else {
-    await sleep(ARM_MS + 50);
   }
 }
 

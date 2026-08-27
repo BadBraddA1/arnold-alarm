@@ -7,13 +7,18 @@
  *
  * Uses @vexyl.ai/sip (G.711 → PCM @ 8 kHz) so no Asterisk is required on Debian 13.
  */
-import { Readable } from "node:stream";
+import { PassThrough } from "node:stream";
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { networkInterfaces } from "node:os";
 import { createRequire } from "node:module";
-import { getPlaybackState, startLiveTalkback, stopTalkback } from "./talkback.js";
+import {
+  getPlaybackState,
+  startLiveTalkback,
+  stopTalkback,
+  waitForTalkbackIdle,
+} from "./talkback.js";
 import {
   getTalkRegStatus,
   startTalkRegistration,
@@ -44,6 +49,11 @@ type SipDialog = {
   bye?: () => Promise<void>;
   sendAudioPaced?: (pcm: Buffer) => Promise<void>;
   on: (ev: string, fn: (...a: unknown[]) => void) => void;
+  removeListener?: (ev: string, fn: (...a: unknown[]) => void) => void;
+  rtpSession?: {
+    pacingTimer?: ReturnType<typeof setTimeout> | null;
+    sendQueue?: unknown[];
+  };
   request?: {
     uri?: string | { user?: string };
     headers?: Record<string, unknown>;
@@ -434,16 +444,26 @@ async function handleIvrAlarm(dialog: SipDialog): Promise<"done" | "cancel"> {
   const timeoutMs = Math.max(15_000, Number(process.env.PA_IVR_TIMEOUT_MS || 30_000));
 
   const pinP = collectPinDigits(dialog, timeoutMs);
-  await playToPhone(dialog, loadAssetPcm("pa-sip-enter-pin.pcm"));
-  const pin = await pinP;
+  const pinPlay = playToPhone(dialog, loadAssetPcm("pa-sip-enter-pin.pcm"));
+  const pinRace = await Promise.race([
+    pinP.then((p) => ({ kind: "pin" as const, p })),
+    pinPlay.then(() => ({ kind: "play" as const })),
+  ]);
+  if (pinRace.kind === "pin") stopPhonePlayback(dialog);
+  const pin = pinRace.kind === "pin" ? pinRace.p : await pinP;
   if (!pin) {
     console.log("[pa] IVR alarm — PIN cancelled or incomplete");
     return "cancel";
   }
 
   const alarmP = collectOneOf(dialog, ["1", "2", "3", "*"], timeoutMs);
-  await playToPhone(dialog, loadAssetPcm("pa-sip-choose-alarm.pcm"));
-  const alarmChoice = await alarmP;
+  const alarmPlay = playToPhone(dialog, loadAssetPcm("pa-sip-choose-alarm.pcm"));
+  const alarmRace = await Promise.race([
+    alarmP.then((d) => ({ kind: "digit" as const, d })),
+    alarmPlay.then(() => ({ kind: "play" as const })),
+  ]);
+  if (alarmRace.kind === "digit") stopPhonePlayback(dialog);
+  const alarmChoice = alarmRace.kind === "digit" ? alarmRace.d : await alarmP;
   if (!alarmChoice || alarmChoice === "*") {
     console.log("[pa] IVR alarm — alarm choice cancelled");
     return "cancel";
@@ -463,8 +483,13 @@ async function handleIvrAlarm(dialog: SipDialog): Promise<"done" | "cancel"> {
         : "pa-sip-confirm-clear.pcm";
 
   const confirmP = collectOneOf(dialog, ["#", "*"], timeoutMs);
-  await playToPhone(dialog, loadAssetPcm(confirmPrompt));
-  const confirm = await confirmP;
+  const confirmPlay = playToPhone(dialog, loadAssetPcm(confirmPrompt));
+  const confirmRace = await Promise.race([
+    confirmP.then((d) => ({ kind: "digit" as const, d })),
+    confirmPlay.then(() => ({ kind: "play" as const })),
+  ]);
+  if (confirmRace.kind === "digit") stopPhonePlayback(dialog);
+  const confirm = confirmRace.kind === "digit" ? confirmRace.d : await confirmP;
   if (confirm !== "#") {
     console.log("[pa] IVR alarm — not confirmed");
     return "cancel";
@@ -555,6 +580,38 @@ async function playToPhone(dialog: SipDialog, pcm: Buffer): Promise<void> {
   }
 }
 
+/** Stop in-progress earpiece playback so DTMF can barge in. */
+function stopPhonePlayback(dialog: SipDialog): void {
+  const rtp = dialog.rtpSession;
+  if (!rtp) return;
+  if (rtp.pacingTimer) {
+    clearTimeout(rtp.pacingTimer);
+    rtp.pacingTimer = null;
+  }
+  if (Array.isArray(rtp.sendQueue)) rtp.sendQueue.length = 0;
+}
+
+/**
+ * Play a prompt but jump ahead as soon as a digit arrives.
+ */
+async function playPromptUntilDigit(
+  dialog: SipDialog,
+  pcm: Buffer,
+  timeoutMs: number,
+): Promise<string | null> {
+  const digitP = waitForDtmf(dialog, timeoutMs);
+  const playP = playToPhone(dialog, pcm);
+  const raced = await Promise.race([
+    digitP.then((d) => ({ kind: "digit" as const, d })),
+    playP.then(() => ({ kind: "play" as const })),
+  ]);
+  if (raced.kind === "digit") {
+    stopPhonePlayback(dialog);
+    return raced.d;
+  }
+  return digitP;
+}
+
 /** Always say goodbye before BYE on accepted calls. */
 async function hangUpWithGoodbye(dialog: SipDialog): Promise<void> {
   await playToPhone(dialog, loadGoodbyePcm());
@@ -642,28 +699,32 @@ async function handlePaLive(
     console.warn("[pa] volume set failed", err);
   }
 
-  // Capture SIP mic audio immediately so we don't miss speech while talkback arms.
-  const pcm = new Readable({
-    read() {
-      /* push-driven */
-    },
-  });
+  // Capture SIP mic + inject silence so ffmpeg/talkback stay alive across VAD gaps.
+  const pcm = new PassThrough({ highWaterMark: 256 * 1024 });
   let pcmBytes = 0;
   let audioChunks = 0;
+  let lastSipAudioAt = 0;
+  const frameBytes = 320; // 20ms @ 8kHz s16le mono
   const onAudio = (...a: unknown[]) => {
     const buf = a[0];
     let chunk: Buffer | null = null;
     if (Buffer.isBuffer(buf)) chunk = buf;
     else if (buf instanceof Uint8Array) chunk = Buffer.from(buf);
     if (!chunk || !chunk.length) return;
+    lastSipAudioAt = Date.now();
     pcmBytes += chunk.length;
     audioChunks += 1;
-    if (!pcm.push(chunk)) {
-      // Slow consumer — drop oldest pressure by ignoring backpressure for live PA
-      // (losing a few ms is better than stalling RTP).
-    }
+    if (!pcm.destroyed) pcm.write(chunk);
   };
   dialog.on("audio", onAudio);
+
+  const silencePump = setInterval(() => {
+    if (pcm.destroyed) return;
+    // Talk often suppresses silence — keep the encoder fed so talkback doesn't stall.
+    if (!lastSipAudioAt || Date.now() - lastSipAudioAt > 40) {
+      pcm.write(Buffer.alloc(frameBytes));
+    }
+  }, 20);
 
   const preambleRaw = (process.env.PA_PREAMBLE_FILE || "off").trim();
   const preambleOff =
@@ -686,35 +747,20 @@ async function handlePaLive(
     }
   }
 
-  // Earpiece cue so staff know when campus is live (after any preamble).
-  try {
-    const sr = 8000;
-    const n = Math.floor(sr * 0.18);
-    const beep = Buffer.alloc(n * 2);
-    for (let i = 0; i < n; i++) {
-      const v = Math.sin((2 * Math.PI * 880 * i) / sr) * 0.4 * 32767;
-      beep.writeInt16LE(Math.max(-32767, Math.min(32767, Math.round(v))), i * 2);
-    }
-    await playToPhone(dialog, beep);
-  } catch {
-    /* ignore */
-  }
-
+  // Open Protect talkback first; beep only once campus path is armed.
   let cleaned = false;
   const cleanup = () => {
     if (cleaned) return;
     cleaned = true;
+    clearInterval(silencePump);
     activeCalls = Math.max(0, activeCalls - 1);
     try {
-      (dialog as { removeListener?: (e: string, fn: (...a: unknown[]) => void) => void }).removeListener?.(
-        "audio",
-        onAudio,
-      );
+      dialog.removeListener?.("audio", onAudio);
     } catch {
       /* ignore */
     }
     try {
-      pcm.push(null);
+      pcm.end();
     } catch {
       /* ignore */
     }
@@ -738,13 +784,30 @@ async function handlePaLive(
   }, 4000);
 
   try {
+    // Returns after sockets+ARM are ready; stream keeps running until hangup.
     await startLiveTalkback({
       actionId: "pa.live",
       speakerIds,
       pcmReadable: pcm,
       pcmSampleRate: 8000,
-      awaitDone: true,
+      awaitDone: false,
     });
+    console.log("[pa] campus talkback armed — earpiece beep, then speak");
+
+    try {
+      const sr = 8000;
+      const n = Math.floor(sr * 0.18);
+      const beep = Buffer.alloc(n * 2);
+      for (let i = 0; i < n; i++) {
+        const v = Math.sin((2 * Math.PI * 880 * i) / sr) * 0.4 * 32767;
+        beep.writeInt16LE(Math.max(-32767, Math.min(32767, Math.round(v))), i * 2);
+      }
+      await playToPhone(dialog, beep);
+    } catch {
+      /* ignore */
+    }
+
+    await waitForTalkbackIdle();
   } catch (err) {
     console.error("[pa] live talkback failed", err);
   } finally {
@@ -779,9 +842,11 @@ async function handleIvrMenu(dialog: SipDialog, speakerIds: string[]): Promise<v
   let choice: string | null = null;
 
   for (let attempt = 0; attempt < 3 && !cleaned; attempt++) {
-    const digitP = waitForDtmf(dialog, menuTimeoutMs);
-    await playToPhone(dialog, loadMenuPromptPcm());
-    choice = await digitP;
+    choice = await playPromptUntilDigit(
+      dialog,
+      loadMenuPromptPcm(),
+      menuTimeoutMs,
+    );
     if (choice === "1" || choice === "2" || choice === "3" || choice === "*" || choice === "#") {
       break;
     }
