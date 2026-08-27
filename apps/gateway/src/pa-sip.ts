@@ -254,6 +254,24 @@ function loadUnarmedPromptPcm(): Buffer {
   return pcm.length ? pcm : loadTestPromptPcm();
 }
 
+function loadWaitForBeepPcm(): Buffer {
+  const pcm = loadAssetPcm("pa-sip-wait-beep.pcm");
+  if (pcm.length) return pcm;
+  // Fallback spoken cadence: short silence so the later beep is still clear.
+  return Buffer.alloc(Math.floor(8000 * 0.4) * 2);
+}
+
+function earpieceBeepPcm(): Buffer {
+  const sr = 8000;
+  const n = Math.floor(sr * 0.14);
+  const beep = Buffer.alloc(n * 2);
+  for (let i = 0; i < n; i++) {
+    const v = Math.sin((2 * Math.PI * 880 * i) / sr) * 0.5 * 32767;
+    beep.writeInt16LE(Math.max(-32767, Math.min(32767, Math.round(v))), i * 2);
+  }
+  return beep;
+}
+
 function loadGoodbyePcm(): Buffer {
   return loadAssetPcm("pa-sip-goodbye.pcm");
 }
@@ -794,7 +812,7 @@ async function handlePaLive(
   }, 4000);
 
   try {
-    // Beep immediately; arm Protect talkback in parallel (mic PCM buffers).
+    // Prompt + arm campus path together; beep only when talkback is ready.
     const liveP = startLiveTalkback({
       actionId: "pa.live",
       speakerIds,
@@ -803,23 +821,24 @@ async function handlePaLive(
       awaitDone: false,
     });
 
-    console.log("[pa] earpiece beep — speak anytime (campus arming in background)");
+    console.log("[pa] wait-for-beep prompt — arming campus talkback");
+    const promptP = playToPhone(dialog, loadWaitForBeepPcm());
+    await Promise.all([
+      liveP.catch((err) => {
+        console.error("[pa] live talkback failed", err);
+        throw err;
+      }),
+      promptP.catch(() => undefined),
+    ]);
+
+    if (cleaned) return;
+    console.log("[pa] campus ready — earpiece beep, then speak");
     try {
-      const sr = 8000;
-      const n = Math.floor(sr * 0.1);
-      const beep = Buffer.alloc(n * 2);
-      for (let i = 0; i < n; i++) {
-        const v = Math.sin((2 * Math.PI * 880 * i) / sr) * 0.5 * 32767;
-        beep.writeInt16LE(Math.max(-32767, Math.min(32767, Math.round(v))), i * 2);
-      }
-      await playToPhone(dialog, beep);
+      await playToPhone(dialog, earpieceBeepPcm());
     } catch {
       /* ignore */
     }
 
-    await liveP.catch((err) => {
-      console.error("[pa] live talkback failed", err);
-    });
     await waitForTalkbackIdle();
   } catch (err) {
     console.error("[pa] live talkback failed", err);
