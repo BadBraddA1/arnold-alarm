@@ -131,7 +131,7 @@ Sequence example (second bell):
 
 ## Emergency codes UI
 
-- **Code Red** / **Code Blue** in thumb reach (sticky bottom), color-matched; **hold to confirm**. **Loop until all clear** is on by default. Only one code at a time: Red/Blue lock after start; **All clear** is grayed out until a code is active, then Red/Blue lock until All clear. All clear plays the **start tone**, then Code Green ×2.
+- **Code Red** / **Code Blue:** tap starts a **10s phone alarm** (campus silent). **Send now**, **Cancel**, or auto-send at 0. Then loop until All clear. Only one code at a time; All clear grayed until a code is active.
 - **Stop & All clear** is green (Code Green ×2 only — not a direct Code Green play button).
 - **Speaker check** (start tone + TEST ACOC) lives on **Home** only — not on the Emergency page, so codes stay clear of test mode.
 
