@@ -371,6 +371,8 @@ async function streamLiveAdts(
   };
   signal.addEventListener("abort", onAbort, { once: true });
 
+  let framesOut = 0;
+  let loggedFirst = false;
   pcmReadable.pipe(ff.stdin!);
   pcmReadable.on("error", () => {
     try {
@@ -401,13 +403,27 @@ async function streamLiveAdts(
         if (len < 7 || pending.length < len) break;
         const frame = pending.subarray(0, len);
         pending = pending.subarray(len);
+        let open = 0;
         for (const ws of sockets) {
-          if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(frame);
+            open += 1;
+          }
+        }
+        framesOut += 1;
+        if (!loggedFirst && open) {
+          loggedFirst = true;
+          console.log(
+            `[talkback] live: first ADTS frame → ${open} speaker socket(s)`,
+          );
         }
       }
     });
     ff.on("close", (code) => {
       signal.removeEventListener("abort", onAbort);
+      console.log(
+        `[talkback] live ffmpeg closed code=${code} frames=${framesOut} stderr=${stderr.slice(0, 120) || "ok"}`,
+      );
       if (signal.aborted) resolve();
       else if (code === 0 || code === null) resolve();
       else reject(new Error(`live ffmpeg failed (${code}): ${stderr.slice(0, 300)}`));
@@ -536,6 +552,8 @@ export async function startLiveTalkback(input: {
   pcmReadable: NodeJS.ReadableStream;
   /** Asterisk AudioSocket default is 8000. */
   pcmSampleRate?: number;
+  /** Wait until the live stream ends (hangup / abort). */
+  awaitDone?: boolean;
 }): Promise<void> {
   if (!input.speakerIds.length) {
     throw new Error("PA speakerIds required");
@@ -547,6 +565,7 @@ export async function startLiveTalkback(input: {
     } catch {
       /* prior session aborted */
     }
+    await sleep(POST_STOP_SETTLE_MS);
   }
 
   const controller = new AbortController();
@@ -578,7 +597,11 @@ export async function startLiveTalkback(input: {
       }
     });
 
-  await sleep(ARM_MS + 50);
+  if (input.awaitDone) {
+    await playbackPromise;
+  } else {
+    await sleep(ARM_MS + 50);
+  }
 }
 
 export async function waitForTalkbackIdle(): Promise<void> {

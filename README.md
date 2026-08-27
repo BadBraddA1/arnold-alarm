@@ -102,7 +102,7 @@ Emergency + bell clips use Protect **ringtones** (`PLAY_SPEAKER` on all speaker 
 | Code Blue | `Code_Blue_Master.ogg` | until All clear (default) |
 | All clear | `Code_Green_au.ogg` ×2 | no |
 
-**Convenience PA** plays `Test_Start_Tone.mp3` (`PA_PREAMBLE_FILE`) on the PA speakers before live talkback. Set `PA_PREAMBLE_FILE=off` to skip.
+**Convenience PA** goes live after a short earpiece beep (campus preamble off by default). Set `PA_PREAMBLE_FILE=Test_Start_Tone.mp3` if you want a building tone before the mic opens.
 
 `PROTECT_USER` / `PROTECT_PASS` must be a **local Protect admin** on the UNVR (Settings → Admins → local access). SSH `root` is not the same account.
 

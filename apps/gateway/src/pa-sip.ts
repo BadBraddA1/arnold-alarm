@@ -642,29 +642,63 @@ async function handlePaLive(
     console.warn("[pa] volume set failed", err);
   }
 
-  const preamble =
-    (process.env.PA_PREAMBLE_FILE || "Test_Start_Tone.mp3").trim();
-  if (preamble && preamble.toLowerCase() !== "off" && preamble.toLowerCase() !== "none") {
-    try {
-      const { startTalkback } = await import("./talkback.js");
-      console.log(`[pa] preamble → ${preamble}`);
-      await startTalkback({
-        actionId: "pa.preamble",
-        file: preamble,
-        speakerIds,
-        awaitDone: true,
-      });
-    } catch (err) {
-      console.error("[pa] preamble failed", err);
-      // Still allow live page if preamble clip is missing/broken.
-    }
-  }
-
+  // Capture SIP mic audio immediately so we don't miss speech while talkback arms.
   const pcm = new Readable({
     read() {
       /* push-driven */
     },
   });
+  let pcmBytes = 0;
+  let audioChunks = 0;
+  const onAudio = (...a: unknown[]) => {
+    const buf = a[0];
+    let chunk: Buffer | null = null;
+    if (Buffer.isBuffer(buf)) chunk = buf;
+    else if (buf instanceof Uint8Array) chunk = Buffer.from(buf);
+    if (!chunk || !chunk.length) return;
+    pcmBytes += chunk.length;
+    audioChunks += 1;
+    if (!pcm.push(chunk)) {
+      // Slow consumer — drop oldest pressure by ignoring backpressure for live PA
+      // (losing a few ms is better than stalling RTP).
+    }
+  };
+  dialog.on("audio", onAudio);
+
+  const preambleRaw = (process.env.PA_PREAMBLE_FILE || "off").trim();
+  const preambleOff =
+    !preambleRaw ||
+    preambleRaw.toLowerCase() === "off" ||
+    preambleRaw.toLowerCase() === "none";
+  if (!preambleOff) {
+    try {
+      const { startTalkback, POST_STOP_SETTLE_MS } = await import("./talkback.js");
+      console.log(`[pa] preamble → ${preambleRaw}`);
+      await startTalkback({
+        actionId: "pa.preamble",
+        file: preambleRaw,
+        speakerIds,
+        awaitDone: true,
+      });
+      await new Promise((r) => setTimeout(r, POST_STOP_SETTLE_MS));
+    } catch (err) {
+      console.error("[pa] preamble failed", err);
+    }
+  }
+
+  // Earpiece cue so staff know when campus is live (after any preamble).
+  try {
+    const sr = 8000;
+    const n = Math.floor(sr * 0.18);
+    const beep = Buffer.alloc(n * 2);
+    for (let i = 0; i < n; i++) {
+      const v = Math.sin((2 * Math.PI * 880 * i) / sr) * 0.4 * 32767;
+      beep.writeInt16LE(Math.max(-32767, Math.min(32767, Math.round(v))), i * 2);
+    }
+    await playToPhone(dialog, beep);
+  } catch {
+    /* ignore */
+  }
 
   let cleaned = false;
   const cleanup = () => {
@@ -672,31 +706,51 @@ async function handlePaLive(
     cleaned = true;
     activeCalls = Math.max(0, activeCalls - 1);
     try {
+      (dialog as { removeListener?: (e: string, fn: (...a: unknown[]) => void) => void }).removeListener?.(
+        "audio",
+        onAudio,
+      );
+    } catch {
+      /* ignore */
+    }
+    try {
       pcm.push(null);
     } catch {
       /* ignore */
     }
     stopTalkback();
-    console.log("[pa] call ended — talkback stopped");
+    console.log(
+      `[pa] call ended — talkback stopped (sip pcm ${pcmBytes} bytes / ${audioChunks} chunks)`,
+    );
   };
 
-  dialog.on("audio", (...a: unknown[]) => {
-    const buf = a[0];
-    if (Buffer.isBuffer(buf)) pcm.push(buf);
-    else if (buf instanceof Uint8Array) pcm.push(Buffer.from(buf));
-  });
   dialog.on("end", cleanup);
   dialog.on("error", (err: unknown) => {
     console.error("[pa] dialog error", err);
     cleanup();
   });
 
-  await startLiveTalkback({
-    actionId: "pa.live",
-    speakerIds,
-    pcmReadable: pcm,
-    pcmSampleRate: 8000,
-  });
+  const stats = setInterval(() => {
+    if (cleaned) return;
+    console.log(
+      `[pa] live stats: sip pcm ${pcmBytes} bytes / ${audioChunks} chunks (speak into the phone)`,
+    );
+  }, 4000);
+
+  try {
+    await startLiveTalkback({
+      actionId: "pa.live",
+      speakerIds,
+      pcmReadable: pcm,
+      pcmSampleRate: 8000,
+      awaitDone: true,
+    });
+  } catch (err) {
+    console.error("[pa] live talkback failed", err);
+  } finally {
+    clearInterval(stats);
+    cleanup();
+  }
 }
 
 /** IVR on Talk extension: 1 = page, 2 = phone-only test, * = hang up. */
