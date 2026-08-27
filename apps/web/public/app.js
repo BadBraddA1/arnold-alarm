@@ -1114,7 +1114,7 @@ function renderBells() {
         <p class="muted" style="margin:0.5rem 0 0;font-size:0.85rem">Play now</p>
         ${actions.map((a) => `<button type="button" class="btn btn-primary btn-block" data-play="${escapeHtml(a.id)}">${escapeHtml(a.label)}</button>`).join("")}
         <div id="play-msg"></div>
-        <p class="muted" style="margin:0;font-size:0.8rem">First bell = start tone on Lobby + Fellowship. Second bell = same start tone twice on all speakers.</p>
+        <p class="muted" style="margin:0;font-size:0.8rem">First bell = start tone on all speakers. Second bell = same start tone twice on all speakers.</p>
       </div>
     </main>`;
   tickClock();

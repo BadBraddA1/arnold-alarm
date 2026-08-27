@@ -4,7 +4,7 @@
 
 ## Product
 
-1. **First bell** — `Start_Bell_Tone.mp3` on **Lobby + Fellowship** only (not hallways).
+1. **First bell** — `Start_Bell_Tone.mp3` on **all speakers**.
 2. **Second bell** — same `Start_Bell_Tone.mp3` **twice** on all speakers (~1.5s gap).
 3. **Schedule at building time** — hour : minute + AM/PM Central; LAN timer or cloud queue.
 4. **See time + Void** — pending list with Central fire time; Void removes it.
@@ -25,7 +25,7 @@ Files in `~/.config/arnold-alarm/audio/` (talkback / sequence ACTIONS):
 ```bash
 # gateway.env ACTIONS (abridged)
 "bells.first": { "kind": "sequence", "steps": [
-  { "kind": "talkback", "file": "Start_Bell_Tone.mp3", "speakerIds": ["<lobby>","<fellowship>"] }
+  { "kind": "talkback", "file": "Start_Bell_Tone.mp3", "speakerIds": ["…all four…"] }
 ]},
 "bells.second": { "kind": "sequence", "steps": [
   { "kind": "talkback", "file": "Start_Bell_Tone.mp3", "speakerIds": ["…all four…"] },
@@ -48,4 +48,4 @@ Then `sudo systemctl restart arnold-alarm-gateway`.
 
 - Persist LAN schedules across Pi reboot
 - Recurring weekday period schedule
-- Change which speakers get the first-bell start tone
+- Change which speakers get either bell (default: all four)

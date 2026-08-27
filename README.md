@@ -91,7 +91,7 @@ Emergency + bell clips use Protect **ringtones** (`PLAY_SPEAKER` on all speaker 
 
 | Action | Behavior |
 |---|---|
-| First bell | `Start_Bell_Tone.mp3` on **Lobby + Fellowship** only |
+| First bell | `Start_Bell_Tone.mp3` on **all speakers** |
 | Second bell | `Start_Bell_Tone.mp3` twice on all speakers (~1.5s gap) |
 
 **Emergency codes** also use talkback (Protect `PLAY_SPEAKER` ringtones were returning HTTP 200 with no audio):
