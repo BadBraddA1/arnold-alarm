@@ -291,3 +291,20 @@ export async function getGatewayHeartbeat(env: Env) {
     `SELECT last_seen, detail FROM gateway_heartbeat WHERE id = 'primary'`,
   ).first<{ last_seen: string; detail: string | null }>();
 }
+
+export async function getSystemArmed(env: Env): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `SELECT value FROM system_settings WHERE key = 'armed'`,
+  ).first<{ value: string }>();
+  if (!row) return true; // default armed if migration not applied yet
+  return row.value === "1" || row.value === "true";
+}
+
+export async function setSystemArmed(env: Env, armed: boolean) {
+  await env.DB.prepare(
+    `INSERT INTO system_settings (key, value) VALUES ('armed', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  )
+    .bind(armed ? "1" : "0")
+    .run();
+}

@@ -18,6 +18,7 @@ Pi    → UniFi Protect NVR → AI speakers
 
 - Site works on cellular. **Play** needs either church Wi‑Fi (direct to Pi) or a PIN with **remote** scope (Worker queue → Pi poll).
 - PINs live in **Cloudflare D1** (hashed). Sessions expire after **45 minutes** (or **30 minutes idle**) so a left-unlocked phone does not stay armed.
+- **Arm / disarm:** Admins can disarm the speaker system from Home. Staff can still send bells/codes while unarmed — commands are **held** (audit log) and speakers stay silent until an admin arms again. Default is armed.
 - Status distinguishes **queued on campus** vs **playing now**, and **Pi offline** vs **Protect unreachable**.
 - Home shows **last play** plus recent activity (Central time).
 

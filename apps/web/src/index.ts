@@ -18,6 +18,8 @@ import {
   setPinHash,
   touchGatewayHeartbeat,
   getGatewayHeartbeat,
+  getSystemArmed,
+  setSystemArmed,
   updateAuditStatus,
   updatePinScopes,
 } from "./db";
@@ -61,6 +63,36 @@ function randomTempPin(): string {
   return String(n).padStart(6, "0");
 }
 
+const UNARMED_MSG =
+  "System is unarmed — command recorded, speakers will not play until an admin arms the system.";
+
+async function holdUnarmedPlay(
+  env: Env,
+  session: NonNullable<Variables["session"]>,
+  actionId: string,
+  mode: string,
+  detail?: string,
+) {
+  const id = crypto.randomUUID();
+  await insertAudit(env, {
+    id,
+    actionId,
+    label: session.label,
+    pinId: session.pinId,
+    mode,
+    status: "held",
+    detail: detail ? `${detail} · unarmed` : "unarmed — not played",
+  });
+  return {
+    ok: true,
+    armed: false,
+    held: true,
+    played: false,
+    id,
+    message: UNARMED_MSG,
+  };
+}
+
 function gatewayAuthorized(c: {
   req: { header: (n: string) => string | undefined };
   env: Env;
@@ -79,10 +111,12 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.get("/api/config", (c) => {
+app.get("/api/config", async (c) => {
   const evacuateActions = parseActionList(c.env.EVACUATE_ACTIONS);
+  const armed = await getSystemArmed(c.env);
   return c.json({
     gatewayUrl: c.env.GATEWAY_URL,
+    armed,
     bellActions: parseActionList(c.env.BELL_ACTIONS),
     evacuateActions:
       evacuateActions.length > 0
@@ -92,6 +126,12 @@ app.get("/api/config", (c) => {
             { id: "evacuate.code_blue", label: "Code Blue — Lockdown" },
           ],
   });
+});
+
+/** Public arm status for gateway SIP PA (no secrets). */
+app.get("/api/system", async (c) => {
+  const armed = await getSystemArmed(c.env);
+  return c.json({ armed });
 });
 
 app.get("/api/auth/session", (c) => {
@@ -234,6 +274,10 @@ app.post("/api/play-token", async (c) => {
     return c.json({ error: "Not allowed for this PIN." }, 403);
   }
 
+  if (!(await getSystemArmed(c.env))) {
+    return c.json(await holdUnarmedPlay(c.env, session, actionId, "lan"));
+  }
+
   const token = await signPlayToken(c.env, {
     pinId: session.pinId,
     scopes: session.scopes,
@@ -244,6 +288,7 @@ app.post("/api/play-token", async (c) => {
     gatewayUrl: c.env.GATEWAY_URL,
     expiresInSec: 60,
     canRemote: hasScope(session.scopes, "remote"),
+    armed: true,
   });
 });
 
@@ -276,6 +321,23 @@ app.post("/api/play-remote", async (c) => {
   const delayMinutes = Math.max(0, Math.min(120, Number(body.delayMinutes) || 0));
   const loop = Boolean(body.loop);
 
+  if (!(await getSystemArmed(c.env))) {
+    return c.json(
+      await holdUnarmedPlay(
+        c.env,
+        session,
+        actionId,
+        "remote",
+        [
+          delayMinutes > 0 ? `delay ${delayMinutes}m` : null,
+          loop ? "loop" : null,
+        ]
+          .filter(Boolean)
+          .join(" · ") || undefined,
+      ),
+    );
+  }
+
   const id = crypto.randomUUID();
   await enqueuePlay(c.env, {
     id,
@@ -303,6 +365,7 @@ app.post("/api/play-remote", async (c) => {
     ok: true,
     id,
     mode: "remote",
+    armed: true,
     status: delayMinutes > 0 ? "scheduled" : "queued",
     message:
       delayMinutes > 0
@@ -322,6 +385,12 @@ app.post("/api/stop-remote", async (c) => {
   }
   if (!actionAllowed("__all_clear__", session.scopes)) {
     return c.json({ error: "Not allowed to issue all clear." }, 403);
+  }
+
+  if (!(await getSystemArmed(c.env))) {
+    return c.json(
+      await holdUnarmedPlay(c.env, session, "__all_clear__", "remote", "stop + all clear"),
+    );
   }
 
   const id = crypto.randomUUID();
@@ -556,6 +625,36 @@ app.patch("/api/admin/pins", async (c) => {
     await setPinActive(c.env, body.id, body.active);
   }
   return c.json({ ok: true });
+});
+
+/** Admin only — arm/disarm speakers. Staff can still send commands while unarmed; they are held. */
+app.post("/api/admin/armed", async (c) => {
+  const session = c.get("session");
+  if (!session?.scopes.includes("admin")) return c.json({ error: "Forbidden" }, 403);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
+  const body = (await c.req.json().catch(() => ({}))) as { armed?: boolean };
+  if (typeof body.armed !== "boolean") {
+    return c.json({ error: "armed (boolean) required" }, 400);
+  }
+  await setSystemArmed(c.env, body.armed);
+  await insertAudit(c.env, {
+    id: crypto.randomUUID(),
+    actionId: body.armed ? "__system_armed__" : "__system_unarmed__",
+    label: session.label,
+    pinId: session.pinId,
+    mode: "admin",
+    status: "done",
+    detail: body.armed ? "system armed" : "system unarmed — plays held",
+  });
+  return c.json({
+    ok: true,
+    armed: body.armed,
+    message: body.armed
+      ? "System armed — speakers will play commands."
+      : "System unarmed — commands are recorded but speakers stay silent.",
+  });
 });
 
 app.all("*", async (c) => {

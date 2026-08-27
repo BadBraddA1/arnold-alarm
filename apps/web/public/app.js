@@ -142,12 +142,22 @@ function paintStatusRow() {
   if (span) span.textContent = text;
 }
 
+function armBadge() {
+  const armed = state.config?.armed !== false;
+  return armed
+    ? `<span class="arm-pill arm-pill--on" title="Speakers will play">Armed</span>`
+    : `<span class="arm-pill arm-pill--off" title="Commands recorded; speakers silent">Unarmed</span>`;
+}
+
 function header(label) {
   const [dot, text] = statusCopy();
   return `
     <header class="app-header">
       <div>
-        <div class="brand">Arnold <span>Alarm</span></div>
+        <div class="brand-row">
+          <div class="brand">Arnold <span>Alarm</span></div>
+          ${armBadge()}
+        </div>
         ${label ? `<div class="muted">${escapeHtml(label)}</div>` : ""}
         <div class="status-row" style="margin-top:0.4rem">
           <span class="dot ${dot}"></span><span>${text}</span>
@@ -279,6 +289,7 @@ function renderHome() {
   const canBells = s.scopes.includes("bells") || s.scopes.includes("admin");
   const canEvac = s.scopes.includes("evacuate") || s.scopes.includes("admin");
   const canAdmin = s.scopes.includes("admin");
+  const armed = state.config?.armed !== false;
   app.innerHTML = `
     <main class="app-shell">
       ${header(s.label)}
@@ -287,6 +298,30 @@ function renderHome() {
           <h1 class="page-title">Choose a panel</h1>
           <p class="muted" style="margin:0">Access is limited to what your PIN allows.</p>
         </div>
+        ${
+          canAdmin
+            ? `<div class="card stack arm-card" style="gap:0.65rem;padding:1rem 1.1rem">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap">
+                  <div>
+                    <p style="margin:0;font-weight:600">Speaker system</p>
+                    <p class="muted" style="margin:0.25rem 0 0;font-size:0.85rem">
+                      ${
+                        armed
+                          ? "Armed — commands play on campus speakers."
+                          : "Unarmed — staff can still send commands; they are logged but speakers stay silent."
+                      }
+                    </p>
+                  </div>
+                  <button type="button" class="btn ${armed ? "btn-ghost" : "btn-primary"}" id="toggle-armed" style="min-height:2.5rem;padding:0.4rem 1rem">
+                    ${armed ? "Disarm" : "Arm system"}
+                  </button>
+                </div>
+                <div id="arm-msg"></div>
+              </div>`
+            : !armed
+              ? `<div class="error-banner" style="margin:0">System is <strong>unarmed</strong> — you can still send commands; speakers will not play until an admin arms the system.</div>`
+              : ""
+        }
         <div id="last-play" class="last-play muted">Loading last play…</div>
         <div class="tile-grid">
           ${canBells ? `<button type="button" class="tile" data-go="bells"><h2>Class bells</h2><p>Play period and chapel tones on campus speakers.</p></button>` : ""}
@@ -302,6 +337,24 @@ function renderHome() {
       </div>
     </main>`;
   void loadAudit();
+  $("#toggle-armed")?.addEventListener("click", () => void toggleArmed());
+}
+
+async function toggleArmed() {
+  const msg = $("#arm-msg");
+  const next = state.config?.armed === false;
+  if (msg) msg.innerHTML = `<p class="muted" style="margin:0">Updating…</p>`;
+  const { res, data } = await api("/api/admin/armed", {
+    method: "POST",
+    body: JSON.stringify({ armed: next }),
+  });
+  if (!res.ok) {
+    if (msg) msg.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not update arm status.")}</div>`;
+    return;
+  }
+  if (state.config) state.config.armed = data.armed;
+  state.message = { kind: "ok", text: data.message || (data.armed ? "System armed." : "System unarmed.") };
+  renderHome();
 }
 
 async function loadAudit() {
@@ -337,13 +390,17 @@ async function loadAudit() {
   el.innerHTML = events
     .slice(0, 40)
     .map((e) => {
-      const ok = e.status === "done" || e.status === "queued" || e.status === "scheduled";
+      const ok =
+        e.status === "done" ||
+        e.status === "queued" ||
+        e.status === "scheduled" ||
+        e.status === "held";
       const detail = [e.mode, e.detail].filter(Boolean).join(" · ");
       return `<div class="audit-item">
         <div class="when">${escapeHtml(formatCentral(e.createdAt))}</div>
         <p class="who-action">${escapeHtml(e.label)} · ${escapeHtml(actionLabel(e.actionId))}</p>
         ${detail ? `<div class="meta">${escapeHtml(detail)}</div>` : ""}
-        <span class="status-pill ${ok ? "ok" : "bad"}">${escapeHtml(statusPlain(e.status))}</span>
+        <span class="status-pill ${ok ? "ok" : "bad"}${e.status === "held" ? " held" : ""}">${escapeHtml(statusPlain(e.status))}</span>
       </div>`;
     })
     .join("");
@@ -353,6 +410,7 @@ function statusPlain(status) {
   if (status === "queued") return "queued on campus";
   if (status === "scheduled") return "scheduled";
   if (status === "done") return "played";
+  if (status === "held") return "held (unarmed)";
   return status;
 }
 
@@ -404,6 +462,8 @@ function actionLabel(actionId) {
   if (actionId === "__all_clear__") return "Stop & All clear (Code Green ×2)";
   if (actionId === "__stop__") return "Stop speakers";
   if (actionId === "test.speakers") return "Test tone — all speakers";
+  if (actionId === "__system_armed__") return "System armed";
+  if (actionId === "__system_unarmed__") return "System unarmed";
   return hit?.label || actionId;
 }
 
@@ -424,6 +484,10 @@ function formatCentral(iso) {
   }
 }
 
+function heldBanner(message) {
+  return `<div class="success-banner">${escapeHtml(message || "System is unarmed — command recorded, speakers will not play.")}</div>`;
+}
+
 async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
   msgEl.innerHTML = `<div class="muted">Sending…</div>`;
   if (actionId === "evacuate.code_green") {
@@ -441,6 +505,10 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
       msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Remote play failed.")}</div>`;
       return;
     }
+    if (data.held || data.armed === false) {
+      msgEl.innerHTML = heldBanner(data.message);
+      return;
+    }
     await logAudit(actionId, "remote", delayMinutes > 0 ? "scheduled" : "queued", loop ? "loop" : undefined);
     msgEl.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "Queued on campus — not playing yet.")}</div>`;
     return;
@@ -451,7 +519,15 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
       method: "POST",
       body: JSON.stringify({ actionId }),
     });
-    if (!res.ok || !data.token || !data.gatewayUrl) {
+    if (!res.ok) {
+      msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not authorize.")}</div>`;
+      return;
+    }
+    if (data.held || data.armed === false) {
+      msgEl.innerHTML = heldBanner(data.message);
+      return;
+    }
+    if (!data.token || !data.gatewayUrl) {
       msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not authorize.")}</div>`;
       return;
     }
@@ -478,7 +554,15 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
     method: "POST",
     body: JSON.stringify({ actionId }),
   });
-  if (!res.ok || !data.token || !data.gatewayUrl) {
+  if (!res.ok) {
+    msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not authorize play.")}</div>`;
+    return;
+  }
+  if (data.held || data.armed === false) {
+    msgEl.innerHTML = heldBanner(data.message);
+    return;
+  }
+  if (!data.token || !data.gatewayUrl) {
     msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not authorize play.")}</div>`;
     return;
   }
@@ -518,6 +602,10 @@ async function stopAndAllClear(msgEl) {
       if (msgEl) msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "All clear failed.")}</div>`;
       return;
     }
+    if (data.held || data.armed === false) {
+      if (msgEl) msgEl.innerHTML = heldBanner(data.message);
+      return;
+    }
     await logAudit("__all_clear__", "remote", "queued", "stop + all clear");
     if (msgEl) msgEl.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "All clear queued on campus — not playing yet.")}</div>`;
     return;
@@ -527,7 +615,15 @@ async function stopAndAllClear(msgEl) {
     method: "POST",
     body: JSON.stringify({ actionId: "__all_clear__" }),
   });
-  if (!res.ok || !data.token || !data.gatewayUrl) {
+  if (!res.ok) {
+    if (msgEl) msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not authorize all clear.")}</div>`;
+    return;
+  }
+  if (data.held || data.armed === false) {
+    if (msgEl) msgEl.innerHTML = heldBanner(data.message);
+    return;
+  }
+  if (!data.token || !data.gatewayUrl) {
     if (msgEl) msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not authorize all clear.")}</div>`;
     return;
   }

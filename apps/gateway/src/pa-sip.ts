@@ -110,6 +110,29 @@ function isPaEnabled() {
   return process.env.PA_ENABLED === "1" || process.env.PA_ENABLED === "true";
 }
 
+const SYSTEM_URL =
+  process.env.CLOUD_SYSTEM_URL ||
+  (process.env.CLOUD_POLL_URL || "https://alarm.arnoldcoc.org/api/gateway/poll").replace(
+    /\/api\/gateway\/poll\/?$/,
+    "/api/system",
+  );
+
+/** Convenience PA respects global arm/disarm from the Worker. */
+async function isSystemArmed(): Promise<boolean> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 3000);
+    const res = await fetch(SYSTEM_URL, { signal: ctrl.signal, cache: "no-store" });
+    clearTimeout(timer);
+    if (!res.ok) return true; // fail open on HTTP errors
+    const data = (await res.json()) as { armed?: boolean };
+    return data.armed !== false;
+  } catch (err) {
+    console.warn("[pa] could not read /api/system — allowing PA", err);
+    return true;
+  }
+}
+
 export function getPaStatus(): PaStatus {
   return {
     enabled: isPaEnabled(),
@@ -201,6 +224,12 @@ export async function startPaAudioSocket(): Promise<void> {
         if (!acceptAny && !calledMatchesExtension(dialog)) {
           console.log(`[pa] rejecting call (want ext ${extension})`);
           await dialog.reject?.(404, "Not Found");
+          return;
+        }
+
+        if (!(await isSystemArmed())) {
+          console.log("[pa] rejecting call — system unarmed");
+          await dialog.reject?.(480, "Temporarily Unavailable");
           return;
         }
 
