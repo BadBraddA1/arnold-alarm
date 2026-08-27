@@ -168,17 +168,23 @@ async function isSystemArmed(): Promise<boolean> {
   }
 }
 
-function loadTestPromptPcm(): Buffer {
+function loadAssetPcm(name: string): Buffer {
   const candidates = [
-    process.env.PA_TEST_PROMPT,
-    join(here, "..", "assets", "pa-sip-test.pcm"),
-    join(process.cwd(), "assets", "pa-sip-test.pcm"),
-    join(process.env.HOME || "", ".config/arnold-alarm/audio/pa-sip-test.pcm"),
-  ].filter(Boolean) as string[];
-
+    join(here, "..", "assets", name),
+    join(process.cwd(), "assets", name),
+    join(process.env.HOME || "", ".config/arnold-alarm/audio", name),
+  ];
   for (const path of candidates) {
     if (existsSync(path)) return readFileSync(path);
   }
+  return Buffer.alloc(0);
+}
+
+function loadTestPromptPcm(): Buffer {
+  const fromEnv = process.env.PA_TEST_PROMPT;
+  if (fromEnv && existsSync(fromEnv)) return readFileSync(fromEnv);
+  const pcm = loadAssetPcm("pa-sip-test.pcm");
+  if (pcm.length) return pcm;
 
   // Fallback: 880 Hz beep ×3 (8 kHz s16le mono) if asset missing
   const sr = 8000;
@@ -198,6 +204,51 @@ function loadTestPromptPcm(): Buffer {
   return Buffer.concat(chunks);
 }
 
+function loadMenuPromptPcm(): Buffer {
+  const pcm = loadAssetPcm("pa-sip-menu.pcm");
+  return pcm.length ? pcm : loadTestPromptPcm();
+}
+
+function loadUnarmedPromptPcm(): Buffer {
+  const pcm = loadAssetPcm("pa-sip-unarmed.pcm");
+  return pcm.length ? pcm : loadTestPromptPcm();
+}
+
+function waitForDtmf(
+  dialog: SipDialog,
+  timeoutMs: number,
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (digit: string | null) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        (dialog as { removeListener?: (e: string, fn: (...a: unknown[]) => void) => void }).removeListener?.(
+          "dtmf",
+          onDtmf,
+        );
+        (dialog as { removeListener?: (e: string, fn: (...a: unknown[]) => void) => void }).removeListener?.(
+          "end",
+          onEnd,
+        );
+      } catch {
+        /* ignore */
+      }
+      resolve(digit);
+    };
+    const onDtmf = (...a: unknown[]) => {
+      const digit = String(a[0] ?? "");
+      if (digit) finish(digit);
+    };
+    const onEnd = () => finish(null);
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    dialog.on("dtmf", onDtmf);
+    dialog.on("end", onEnd);
+  });
+}
+
 export function getPaStatus(): PaStatus {
   return {
     enabled: isPaEnabled(),
@@ -212,12 +263,26 @@ export function getPaStatus(): PaStatus {
   };
 }
 
-async function handleSipTest(dialog: SipDialog): Promise<void> {
-  await dialog.trying?.();
-  await dialog.ringing?.();
-  await dialog.accept({ payloadType: 0 }); // PCMU
-  activeCalls += 1;
-  console.log(`[pa] SIP test ${testExtension} — prompt to phone only (no speakers)`);
+async function playToPhone(dialog: SipDialog, pcm: Buffer): Promise<void> {
+  if (!pcm.length || !dialog.sendAudioPaced) return;
+  try {
+    await dialog.sendAudioPaced(pcm);
+  } catch (err) {
+    console.error("[pa] sendAudioPaced failed", err);
+  }
+}
+
+async function handleSipTest(
+  dialog: SipDialog,
+  opts: { alreadyAccepted?: boolean } = {},
+): Promise<void> {
+  if (!opts.alreadyAccepted) {
+    await dialog.trying?.();
+    await dialog.ringing?.();
+    await dialog.accept({ payloadType: 0 }); // PCMU
+    activeCalls += 1;
+  }
+  console.log(`[pa] SIP test — prompt to phone only (no speakers)`);
 
   let cleaned = false;
   const cleanup = () => {
@@ -232,16 +297,7 @@ async function handleSipTest(dialog: SipDialog): Promise<void> {
     cleanup();
   });
 
-  try {
-    const pcm = loadTestPromptPcm();
-    if (dialog.sendAudioPaced) {
-      await dialog.sendAudioPaced(pcm);
-    } else {
-      console.warn("[pa] sendAudioPaced missing — hang up without prompt");
-    }
-  } catch (err) {
-    console.error("[pa] failed to play SIP test prompt", err);
-  }
+  await playToPhone(dialog, loadTestPromptPcm());
 
   try {
     await dialog.bye?.();
@@ -251,24 +307,50 @@ async function handleSipTest(dialog: SipDialog): Promise<void> {
   cleanup();
 }
 
-async function handlePaLive(dialog: SipDialog, speakerIds: string[]): Promise<void> {
+async function handlePaLive(
+  dialog: SipDialog,
+  speakerIds: string[],
+  opts: { alreadyAccepted?: boolean } = {},
+): Promise<void> {
   if (!speakerIds.length) {
     console.log("[pa] rejecting PA — no speaker IDs configured");
-    await dialog.reject?.(503, "Service Unavailable");
+    if (!opts.alreadyAccepted) {
+      await dialog.reject?.(503, "Service Unavailable");
+    } else {
+      await playToPhone(dialog, loadUnarmedPromptPcm());
+      try {
+        await dialog.bye?.();
+      } catch {
+        /* ignore */
+      }
+      activeCalls = Math.max(0, activeCalls - 1);
+    }
     return;
   }
 
   if (!(await isSystemArmed())) {
-    console.log("[pa] rejecting PA call — system unarmed");
-    await dialog.reject?.(480, "Temporarily Unavailable");
+    console.log("[pa] PA blocked — system unarmed");
+    if (!opts.alreadyAccepted) {
+      await dialog.reject?.(480, "Temporarily Unavailable");
+      return;
+    }
+    await playToPhone(dialog, loadUnarmedPromptPcm());
+    try {
+      await dialog.bye?.();
+    } catch {
+      /* ignore */
+    }
+    activeCalls = Math.max(0, activeCalls - 1);
     return;
   }
 
-  await dialog.trying?.();
-  await dialog.ringing?.();
-  await dialog.accept({ payloadType: 0 }); // PCMU
+  if (!opts.alreadyAccepted) {
+    await dialog.trying?.();
+    await dialog.ringing?.();
+    await dialog.accept({ payloadType: 0 }); // PCMU
+    activeCalls += 1;
+  }
 
-  activeCalls += 1;
   console.log(
     `[pa] live talkback started (ext ${extension}) → ${speakerIds.length} speakers`,
   );
@@ -310,6 +392,85 @@ async function handlePaLive(dialog: SipDialog, speakerIds: string[]): Promise<vo
     pcmReadable: pcm,
     pcmSampleRate: 8000,
   });
+}
+
+/** IVR on Talk extension: 1 = page, 2 = phone-only test, * = hang up. */
+async function handleIvrMenu(dialog: SipDialog, speakerIds: string[]): Promise<void> {
+  await dialog.trying?.();
+  await dialog.ringing?.();
+  await dialog.accept({ payloadType: 0 });
+  activeCalls += 1;
+  console.log("[pa] IVR menu — waiting for DTMF (1=page, 2=test)");
+
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    activeCalls = Math.max(0, activeCalls - 1);
+    stopTalkback();
+    console.log("[pa] IVR call ended");
+  };
+  dialog.on("end", cleanup);
+  dialog.on("error", (err: unknown) => {
+    console.error("[pa] IVR dialog error", err);
+    cleanup();
+  });
+
+  const menuTimeoutMs = Math.max(8_000, Number(process.env.PA_IVR_TIMEOUT_MS || 20_000));
+  let choice: string | null = null;
+
+  for (let attempt = 0; attempt < 3 && !cleaned; attempt++) {
+    const digitP = waitForDtmf(dialog, menuTimeoutMs);
+    await playToPhone(dialog, loadMenuPromptPcm());
+    choice = await digitP;
+    if (choice === "1" || choice === "2" || choice === "*" || choice === "#") break;
+    if (choice === null) break; // timeout or hangup
+    console.log(`[pa] IVR ignored digit "${choice}"`);
+  }
+
+  if (cleaned) return;
+
+  if (choice === "1") {
+    console.log("[pa] IVR → page (talkback)");
+    // already counted in activeCalls; handlePaLive with alreadyAccepted won't increment again
+    // but handlePaLive increments if !alreadyAccepted. We already incremented — pass alreadyAccepted
+    // and don't double-count: handlePaLive with alreadyAccepted skips increment. Good.
+    // However cleanup on IVR vs PA: handlePaLive registers its own cleanup that decrements.
+    // Our IVR cleanup also decrements — double decrement risk.
+    // Fix: mark cleaned without decrement before handing off, or don't register IVR cleanup decrement for handoff.
+
+    // Hand off: disable IVR cleanup decrement by setting cleaned=true without decrementing... 
+    // Better approach: don't use shared activeCalls carefully.
+
+    cleaned = true; // prevent IVR cleanup from double-decrementing on end
+    // Manually keep activeCalls as-is for PA handler
+    await handlePaLive(dialog, speakerIds, { alreadyAccepted: true });
+    // handlePaLive with alreadyAccepted does NOT increment — but we already +1'd.
+    // handlePaLive cleanup WILL decrement. Good.
+    // But handlePaLive also registers end handlers — and our IVR cleanup is no-op now due to cleaned=true.
+    // Problem: handlePaLive expects to have incremented OR alreadyAccepted means it won't increment,
+    // but its cleanup still decrements. We incremented once in IVR — OK.
+
+    // Wait - handlePaLive with alreadyAccepted doesn't add end/cleanup if... it always adds cleanup that decrements.
+    // activeCalls was +1 in IVR. handlePaLive alreadyAccepted: no +1. cleanup on end: -1. Perfect.
+    return;
+  }
+
+  if (choice === "2") {
+    console.log("[pa] IVR → phone-only test");
+    cleaned = true; // hand off
+    await handleSipTest(dialog, { alreadyAccepted: true });
+    // handleSipTest alreadyAccepted: no +1, cleanup -1. We +1'd in IVR. Good.
+    return;
+  }
+
+  console.log(`[pa] IVR no valid choice (got ${choice ?? "timeout"}) — hanging up`);
+  try {
+    await dialog.bye?.();
+  } catch {
+    /* ignore */
+  }
+  cleanup();
 }
 
 export async function startPaAudioSocket(): Promise<void> {
@@ -360,7 +521,7 @@ export async function startPaAudioSocket(): Promise<void> {
     publicAddress,
     udp: true,
     tcp: true,
-    maxConcurrentCalls: 1,
+    maxConcurrentCalls: 2,
     ...(allowedIps.length ? { allowedIps } : {}),
     logger: {
       error: (e: unknown) => console.error("[pa/sip]", e),
@@ -377,17 +538,28 @@ export async function startPaAudioSocket(): Promise<void> {
         const acceptAny =
           process.env.PA_ACCEPT_ANY !== "0" && process.env.PA_ACCEPT_ANY !== "false";
         const talkUser = (process.env.PA_TALK_USER || "").trim();
-        const talkMode = (process.env.PA_TALK_MODE || "test").toLowerCase();
+        const talkMode = (process.env.PA_TALK_MODE || "menu").toLowerCase();
 
         console.log(`[pa] inbound INVITE called="${called || "?"}"`);
 
-        const isTalkDevice = Boolean(talkUser) && (called === talkUser || called.endsWith(talkUser));
-        const isTest =
-          called === testExtension ||
-          called.endsWith(testExtension) ||
-          (isTalkDevice && talkMode !== "pa");
+        const isTalkDevice =
+          Boolean(talkUser) && (called === talkUser || called.endsWith(talkUser));
 
-        if (isTest) {
+        // Talk third-party device → IVR menu (1=page, 2=test) unless forced
+        if (isTalkDevice && talkMode !== "pa" && talkMode !== "test") {
+          await handleIvrMenu(dialog, speakerIds);
+          return;
+        }
+        if (isTalkDevice && talkMode === "test") {
+          await handleSipTest(dialog);
+          return;
+        }
+        if (isTalkDevice && talkMode === "pa") {
+          await handlePaLive(dialog, speakerIds);
+          return;
+        }
+
+        if (called === testExtension || called.endsWith(testExtension)) {
           await handleSipTest(dialog);
           return;
         }
@@ -395,7 +567,6 @@ export async function startPaAudioSocket(): Promise<void> {
         const isPa =
           called === extension ||
           called.endsWith(extension) ||
-          (isTalkDevice && talkMode === "pa") ||
           (!called && acceptAny);
 
         if (!isPa) {
