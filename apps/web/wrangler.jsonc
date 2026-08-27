@@ -28,6 +28,6 @@
   "vars": {
     "GATEWAY_URL": "http://192.168.1.204:8787",
     "BELL_ACTIONS": "bells.test:TEST ACOC (test tone),bells.period_start:Period start,bells.period_end:Period end,bells.chapel:Chapel",
-    "EVACUATE_ACTIONS": "evacuate.code_red:Code Red — Evacuate,evacuate.code_blue:Code Blue — Lockdown,evacuate.code_green:Code Green — All clear (×2)"
+    "EVACUATE_ACTIONS": "evacuate.code_red:Code Red — Evacuate,evacuate.code_blue:Code Blue — Lockdown"
   }
 }

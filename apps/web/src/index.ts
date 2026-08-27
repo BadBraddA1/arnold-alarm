@@ -76,11 +76,10 @@ app.get("/api/config", (c) => {
     bellActions: parseActionList(c.env.BELL_ACTIONS),
     evacuateActions:
       evacuateActions.length > 0
-        ? evacuateActions
+        ? evacuateActions.filter((a) => a.id !== "evacuate.code_green")
         : [
             { id: "evacuate.code_red", label: "Code Red — Evacuate" },
             { id: "evacuate.code_blue", label: "Code Blue — Lockdown" },
-            { id: "evacuate.code_green", label: "Code Green — All clear" },
           ],
   });
 });
@@ -230,33 +229,33 @@ app.post("/api/stop-remote", async (c) => {
   const session = c.get("session");
   if (!session) return c.json({ error: "Unauthorized" }, 401);
   if (!hasScope(session.scopes, "remote")) {
-    return c.json({ error: "Remote stop requires remote play access." }, 403);
+    return c.json({ error: "Remote all clear requires remote play access." }, 403);
   }
-  if (!hasScope(session.scopes, "evacuate") && !hasScope(session.scopes, "admin")) {
-    return c.json({ error: "Not allowed to stop emergency audio." }, 403);
+  if (!actionAllowed("__all_clear__", session.scopes)) {
+    return c.json({ error: "Not allowed to issue all clear." }, 403);
   }
 
   const id = crypto.randomUUID();
   await enqueuePlay(c.env, {
     id,
-    actionId: "__stop__",
+    actionId: "__all_clear__",
     pinId: session.pinId,
     label: session.label,
     delayMinutes: 0,
-    command: "stop",
+    command: "all_clear",
   });
   await insertAudit(c.env, {
     id,
-    actionId: "__stop__",
+    actionId: "__all_clear__",
     label: session.label,
     pinId: session.pinId,
     mode: "remote",
     status: "queued",
-    detail: "stop",
+    detail: "stop + all clear",
   });
   return c.json({
     ok: true,
-    message: "Stop queued — speakers should go silent within a few seconds.",
+    message: "All clear queued — Code Green will play on all speakers shortly.",
   });
 });
 

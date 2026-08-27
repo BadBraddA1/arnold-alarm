@@ -68,6 +68,15 @@ async function runAction(
   actionId: string,
   options: { loop?: boolean; repeat?: number } = {},
 ) {
+  if (actionId === "__all_clear__") {
+    stopTalkback();
+    const def = actions["evacuate.code_green"];
+    if (!def) {
+      throw Object.assign(new Error("All clear action not configured"), { status: 500 });
+    }
+    await triggerAction(def, { actionId: "evacuate.code_green" });
+    return;
+  }
   if (actionId === "__stop__") {
     stopTalkback();
     return;
@@ -160,6 +169,11 @@ async function pollCloudOnce() {
         await ackCloud(job.id, true);
         continue;
       }
+      if (job.command === "all_clear" || job.actionId === "__all_clear__") {
+        await runAction("__all_clear__");
+        await ackCloud(job.id, true);
+        continue;
+      }
       if (job.delayMinutes > 0) {
         scheduleJob(job.actionId, job.delayMinutes * 60_000);
         await ackCloud(job.id, true);
@@ -234,6 +248,12 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
     try {
       const raw = await readBody(req);
       const body = playSchema.parse(JSON.parse(raw || "{}"));
+      if (body.actionId === "evacuate.code_green") {
+        sendJson(res, 403, {
+          error: "All clear only via POST /all-clear",
+        });
+        return;
+      }
       await verifyPlayToken(body.token, body.actionId);
       await runAction(body.actionId, { loop: body.loop });
       sendJson(res, 200, { ok: true, playback: getPlaybackState() });
@@ -246,6 +266,30 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
             ? 401
             : 500;
       console.error("[play]", message);
+      sendJson(res, status, { error: message });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/all-clear") {
+    try {
+      const raw = await readBody(req);
+      const body = stopSchema.parse(JSON.parse(raw || "{}"));
+      const { payload } = await jwtVerify(
+        body.token,
+        new TextEncoder().encode(PLAY_JWT_SECRET),
+      );
+      if (payload.typ !== "play") throw new Error("Invalid token type");
+      if (String(payload.actionId) !== "__all_clear__") {
+        throw new Error("Token not valid for all clear");
+      }
+      await runAction("__all_clear__");
+      sendJson(res, 200, { ok: true, playback: getPlaybackState() });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "All clear failed";
+      const status =
+        message.includes("token") || message.includes("Invalid") ? 401 : 500;
+      console.error("[all-clear]", message);
       sendJson(res, status, { error: message });
     }
     return;

@@ -248,6 +248,8 @@ function actionLabel(actionId) {
   const bells = state.config?.bellActions || [];
   const evacs = state.config?.evacuateActions || [];
   const hit = [...bells, ...evacs].find((a) => a.id === actionId);
+  if (actionId === "__all_clear__") return "Stop & All clear (Code Green ×2)";
+  if (actionId === "__stop__") return "Stop speakers";
   return hit?.label || actionId;
 }
 
@@ -270,6 +272,10 @@ function formatCentral(iso) {
 
 async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
   msgEl.innerHTML = "";
+  if (actionId === "evacuate.code_green") {
+    msgEl.innerHTML = `<div class="error-banner">All clear is only available via <strong>Stop &amp; All clear</strong>.</div>`;
+    return;
+  }
   const canRemote = canRemotePlay();
 
   if (canRemote) {
@@ -344,40 +350,40 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
   }
 }
 
-async function stopPlayback(msgEl) {
+async function stopAndAllClear(msgEl) {
   if (msgEl) msgEl.innerHTML = "";
   if (canRemotePlay()) {
     const { res, data } = await api("/api/stop-remote", { method: "POST", body: "{}" });
     if (!res.ok) {
-      if (msgEl) msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Remote stop failed.")}</div>`;
+      if (msgEl) msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "All clear failed.")}</div>`;
       return;
     }
-    await logAudit("__stop__", "remote", "done", "stop");
-    if (msgEl) msgEl.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "Stop queued.")}</div>`;
+    await logAudit("__all_clear__", "remote", "queued", "stop + all clear");
+    if (msgEl) msgEl.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "All clear queued.")}</div>`;
     return;
   }
 
   const { res, data } = await api("/api/play-token", {
     method: "POST",
-    body: JSON.stringify({ actionId: "evacuate.code_green" }),
+    body: JSON.stringify({ actionId: "__all_clear__" }),
   });
   if (!res.ok || !data.token || !data.gatewayUrl) {
-    if (msgEl) msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not authorize stop.")}</div>`;
+    if (msgEl) msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not authorize all clear.")}</div>`;
     return;
   }
   try {
-    const stopRes = await fetch(`${data.gatewayUrl}/stop`, {
+    const clearRes = await fetch(`${data.gatewayUrl}/all-clear`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: data.token }),
     });
-    const stopData = await stopRes.json().catch(() => ({}));
-    if (!stopRes.ok) {
-      if (msgEl) msgEl.innerHTML = `<div class="error-banner">${escapeHtml(stopData.error || "Stop failed.")}</div>`;
+    const clearData = await clearRes.json().catch(() => ({}));
+    if (!clearRes.ok) {
+      if (msgEl) msgEl.innerHTML = `<div class="error-banner">${escapeHtml(clearData.error || "All clear failed.")}</div>`;
       return;
     }
-    await logAudit("__stop__", "lan", "done", "stop");
-    if (msgEl) msgEl.innerHTML = `<div class="success-banner">Speakers stopped.</div>`;
+    await logAudit("__all_clear__", "lan", "done", "stop + all clear");
+    if (msgEl) msgEl.innerHTML = `<div class="success-banner">All clear sent — Code Green playing on all speakers.</div>`;
   } catch {
     if (msgEl) msgEl.innerHTML = `<div class="error-banner">Cannot reach the alarm gateway.</div>`;
   }
@@ -466,11 +472,10 @@ function renderBells() {
 }
 
 function renderEvacuate() {
-  const actions = state.config?.evacuateActions || [
+  const actions = (state.config?.evacuateActions || [
     { id: "evacuate.code_red", label: "Code Red — Evacuate" },
     { id: "evacuate.code_blue", label: "Code Blue — Lockdown" },
-    { id: "evacuate.code_green", label: "Code Green — All clear (×2)" },
-  ];
+  ]).filter((a) => !a.id.includes("green"));
   app.innerHTML = `
     <main class="app-shell">
       ${header(state.session.label)}
@@ -480,23 +485,18 @@ function renderEvacuate() {
           <h1 class="page-title">Emergency codes</h1>
           <p class="muted" style="margin:0">
             ${playHint()} Confirm before sending Red or Blue. Plays on all campus speakers.
-            Stop ends queued playback; a clip already sounding may finish on its own.
+            <strong>All clear (Code Green)</strong> is only issued via the button below — it plays twice on every speaker.
           </p>
         </div>
         <label class="checks" style="margin:0">
-          <input type="checkbox" id="evac-loop" /> Loop until stopped (lockdown / evacuate)
+          <input type="checkbox" id="evac-loop" /> Loop until all clear (lockdown / evacuate)
         </label>
-        <button type="button" class="btn btn-ghost btn-block" id="evac-stop" style="border-color: color-mix(in oklab, var(--accent) 35%, var(--line))">
-          Stop speakers
+        <button type="button" class="btn btn-primary btn-block" id="evac-all-clear">
+          Stop &amp; All clear (Code Green ×2)
         </button>
         ${actions
           .map((a) => {
-            const isGreen = a.id.includes("green");
-            const cls = isGreen ? "btn-primary" : "btn-danger";
-            if (isGreen) {
-              return `<button type="button" class="btn ${cls} btn-block" data-play="${escapeHtml(a.id)}">${escapeHtml(a.label)}</button>`;
-            }
-            return `<button type="button" class="btn ${cls} btn-block" data-arm-evac="${escapeHtml(a.id)}" data-label="${escapeHtml(a.label)}">${escapeHtml(a.label)}</button>`;
+            return `<button type="button" class="btn btn-danger btn-block" data-arm-evac="${escapeHtml(a.id)}" data-label="${escapeHtml(a.label)}">${escapeHtml(a.label)}</button>`;
           })
           .join("")}
         <div id="evac-confirm"></div>
@@ -526,8 +526,20 @@ function renderEvacuate() {
     });
   });
 
-  $("#evac-stop")?.addEventListener("click", () => {
-    void stopPlayback($("#play-msg"));
+  $("#evac-all-clear")?.addEventListener("click", () => {
+    $("#evac-confirm").innerHTML = `
+      <div class="confirm-box stack">
+        <p style="margin:0">Issue <strong>All clear</strong> on all campus speakers? Code Green will play <strong>twice</strong>. Any active lockdown/evacuate loop should be ended first.</p>
+        <button type="button" class="btn btn-primary btn-block" id="confirm-all-clear">Confirm all clear</button>
+        <button type="button" class="btn btn-ghost btn-block" data-cancel-evac>Cancel</button>
+      </div>`;
+    $("#confirm-all-clear")?.addEventListener("click", () => {
+      $("#evac-confirm").innerHTML = "";
+      void stopAndAllClear($("#play-msg"));
+    });
+    $("[data-cancel-evac]")?.addEventListener("click", () => {
+      $("#evac-confirm").innerHTML = "";
+    });
   });
 }
 
