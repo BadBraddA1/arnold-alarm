@@ -12,11 +12,12 @@ export type ActionDef =
   | { kind: "webhook"; url: string }
   | { kind: "alarmWebhook"; id: string }
   | { kind: "testSound"; speakerIds: string[] }
-  | { kind: "talkback"; file: string; speakerIds: string[] }
+  | { kind: "talkback"; file: string; speakerIds: string[]; repeat?: number }
   | { kind: "automation"; id: string };
 
 export type PlayOptions = {
   loop?: boolean;
+  repeat?: number;
   actionId?: string;
 };
 
@@ -300,6 +301,7 @@ export async function triggerAction(def: ActionDef, options: PlayOptions = {}) {
       file: def.file,
       speakerIds: def.speakerIds,
       loop: options.loop,
+      repeat: options.repeat ?? def.repeat,
     });
     return;
   }

@@ -469,7 +469,7 @@ function renderEvacuate() {
   const actions = state.config?.evacuateActions || [
     { id: "evacuate.code_red", label: "Code Red — Evacuate" },
     { id: "evacuate.code_blue", label: "Code Blue — Lockdown" },
-    { id: "evacuate.code_green", label: "Code Green — All clear" },
+    { id: "evacuate.code_green", label: "Code Green — All clear (×2)" },
   ];
   app.innerHTML = `
     <main class="app-shell">

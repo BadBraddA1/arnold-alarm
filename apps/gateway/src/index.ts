@@ -64,7 +64,10 @@ async function verifyPlayToken(token: string, actionId: string) {
   return payload;
 }
 
-async function runAction(actionId: string, options: { loop?: boolean } = {}) {
+async function runAction(
+  actionId: string,
+  options: { loop?: boolean; repeat?: number } = {},
+) {
   if (actionId === "__stop__") {
     stopTalkback();
     return;
@@ -73,7 +76,10 @@ async function runAction(actionId: string, options: { loop?: boolean } = {}) {
   if (!def) {
     throw Object.assign(new Error(`Unknown action: ${actionId}`), { status: 404 });
   }
-  await triggerAction(def, { loop: options.loop, actionId });
+  const repeat =
+    options.repeat ??
+    (def.kind === "talkback" && def.repeat ? def.repeat : undefined);
+  await triggerAction(def, { loop: options.loop, repeat, actionId });
 }
 
 function listScheduled() {

@@ -18,6 +18,7 @@ export type PlaybackState = {
   active: boolean;
   actionId: string | null;
   loop: boolean;
+  repeat: number;
   startedAt: number | null;
 };
 
@@ -28,6 +29,7 @@ const state: PlaybackState = {
   active: false,
   actionId: null,
   loop: false,
+  repeat: 1,
   startedAt: null,
 };
 
@@ -122,6 +124,46 @@ async function openTalkbackSocket(
   return ws;
 }
 
+async function openTalkbackSockets(
+  speakerIds: string[],
+  cookie: string,
+  signal: AbortSignal,
+): Promise<WebSocket[]> {
+  // Open all speaker sockets at once — sequential opens within ~7s floor cause silent dropouts.
+  const results = await Promise.allSettled(
+    speakerIds.map((speakerId) => openTalkbackSocket(speakerId, cookie)),
+  );
+  const sockets: WebSocket[] = [];
+  const errors: string[] = [];
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    const id = speakerIds[i];
+    if (result.status === "fulfilled") {
+      sockets.push(result.value);
+    } else {
+      const msg =
+        result.reason instanceof Error ? result.reason.message : String(result.reason);
+      errors.push(`${id}: ${msg}`);
+      console.error(`[talkback] speaker ${id} failed to connect: ${msg}`);
+    }
+  }
+  if (!sockets.length) {
+    throw new Error(
+      errors.length
+        ? `No talkback speakers connected (${errors.join("; ")})`
+        : "No talkback speakers connected",
+    );
+  }
+  if (errors.length) {
+    console.warn(`[talkback] partial speakers: ${sockets.length}/${speakerIds.length}`);
+  }
+  if (signal.aborted) {
+    for (const ws of sockets) ws.close();
+    return [];
+  }
+  return sockets;
+}
+
 async function streamFrames(
   frames: Buffer[],
   sockets: WebSocket[],
@@ -145,30 +187,36 @@ async function runTalkbackSession(input: {
   filePath: string;
   speakerIds: string[];
   loop: boolean;
+  repeat: number;
   signal: AbortSignal;
 }): Promise<void> {
   const { cookie } = await getProtectAuthHeaders();
   const frames = await encodeAdts(input.filePath);
-  const sockets: WebSocket[] = [];
 
-  try {
-    for (const speakerId of input.speakerIds) {
-      if (input.signal.aborted) return;
-      sockets.push(await openTalkbackSocket(speakerId, cookie));
+  let playsLeft = input.loop ? Number.POSITIVE_INFINITY : Math.max(1, input.repeat);
+  while (playsLeft > 0 && !input.signal.aborted) {
+    const sockets = await openTalkbackSockets(
+      input.speakerIds,
+      cookie,
+      input.signal,
+    );
+    if (!sockets.length) return;
+
+    try {
+      await streamFrames(frames, sockets, input.signal);
+    } finally {
+      for (const ws of sockets) {
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+      }
     }
 
-    do {
-      await streamFrames(frames, sockets, input.signal);
-      if (!input.loop || input.signal.aborted) break;
+    playsLeft = input.loop ? playsLeft : playsLeft - 1;
+    if (playsLeft > 0 && !input.signal.aborted) {
       await sleep(SESSION_RECOVERY_MS);
-    } while (!input.signal.aborted);
-  } finally {
-    for (const ws of sockets) {
-      try {
-        ws.close();
-      } catch {
-        /* ignore */
-      }
     }
   }
 }
@@ -186,6 +234,7 @@ export async function startTalkback(input: {
   file: string;
   speakerIds: string[];
   loop?: boolean;
+  repeat?: number;
 }): Promise<void> {
   if (playbackPromise) {
     stopTalkback();
@@ -199,17 +248,20 @@ export async function startTalkback(input: {
   const filePath = resolveAudioFile(input.file);
   await readFile(filePath);
 
+  const repeat = input.loop ? 1 : Math.max(1, input.repeat ?? 1);
   const controller = new AbortController();
   abortController = controller;
   state.active = true;
   state.actionId = input.actionId;
   state.loop = Boolean(input.loop);
+  state.repeat = input.loop ? 0 : repeat;
   state.startedAt = Date.now();
 
   playbackPromise = runTalkbackSession({
     filePath,
     speakerIds: input.speakerIds,
     loop: Boolean(input.loop),
+    repeat,
     signal: controller.signal,
   })
     .catch((err) => {
@@ -222,6 +274,7 @@ export async function startTalkback(input: {
         state.active = false;
         state.actionId = null;
         state.loop = false;
+        state.repeat = 1;
         state.startedAt = null;
       }
     });
