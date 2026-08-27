@@ -388,6 +388,30 @@ async function runLiveTalkbackSession(input: {
   const MAX_PENDING = 120; // ~5s of AAC frames
   let framesOut = 0;
   let loggedFirst = false;
+  let readyScheduled = false;
+  // Prefer late over early — speakers need frames flowing before the earpiece beep.
+  const beepSettleMs = Math.max(
+    500,
+    Number(process.env.PA_LIVE_BEEP_SETTLE_MS || 1400),
+  );
+  const minFramesBeforeBeep = Math.max(
+    8,
+    Number(process.env.PA_LIVE_BEEP_MIN_FRAMES || Math.ceil(ARM_MS / FRAME_MS) + 8),
+  );
+
+  const scheduleReady = () => {
+    if (readyScheduled || input.signal.aborted) return;
+    if (framesOut < minFramesBeforeBeep) return;
+    readyScheduled = true;
+    console.log(
+      `[talkback] live: path hot (${framesOut} frames) — beep settle ${beepSettleMs}ms`,
+    );
+    void (async () => {
+      await sleep(beepSettleMs);
+      if (input.signal.aborted) return;
+      input.onReady?.();
+    })();
+  };
 
   const emitFrame = (frame: Buffer) => {
     if (!socketsReady) {
@@ -402,13 +426,15 @@ async function runLiveTalkbackSession(input: {
         open += 1;
       }
     }
+    if (!open) return;
     framesOut += 1;
-    if (!loggedFirst && open) {
+    if (!loggedFirst) {
       loggedFirst = true;
       console.log(
         `[talkback] live: first ADTS frame → ${open} speaker socket(s)`,
       );
     }
+    scheduleReady();
   };
 
   let pending = Buffer.alloc(0);
@@ -458,25 +484,12 @@ async function runLiveTalkbackSession(input: {
     if (!sockets.length) {
       throw new Error("No talkback speakers connected for live PA");
     }
-    for (const frame of pendingFrames) {
-      let open = 0;
-      for (const ws of sockets) {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(frame);
-          open += 1;
-        }
-      }
-      framesOut += 1;
-      if (!loggedFirst && open) {
-        loggedFirst = true;
-        console.log(
-          `[talkback] live: first ADTS frame → ${open} speaker socket(s) (flush)`,
-        );
-      }
-    }
-    pendingFrames.length = 0;
+    const queued = pendingFrames.splice(0, pendingFrames.length);
     socketsReady = true;
-    input.onReady?.();
+    for (const frame of queued) {
+      emitFrame(frame);
+    }
+    scheduleReady();
     await ffmpegDone;
   } finally {
     onAbort();
@@ -644,9 +657,8 @@ export async function startLiveTalkback(input: {
       }
     });
 
-  // Return as soon as Protect sockets are open so PA can beep immediately.
-  // Speaker-side ARM still happens inside streamLiveAdts before AAC frames.
-  await Promise.race([readyP, sleep(12_000)]);
+  // Return only after AAC is flowing to speakers + settle (beep prefers late).
+  await Promise.race([readyP, sleep(20_000)]);
 
   if (input.awaitDone) {
     await playbackPromise;
