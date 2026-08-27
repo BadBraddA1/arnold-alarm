@@ -1,56 +1,38 @@
-# Building-time bells (plan)
+# Building-time bells
 
-**Goal:** Schedule class bells against the **building clock** (America/Chicago), not only “ring in 15 minutes from now.”
+**Status:** UI shipped — schedule First / Second bell against the building clock (America/Chicago).
 
-Today the bells page shows Central time and supports a relative delay (`POST /schedule` with `delayMinutes`). Staff still have to do the math for “period ends at 10:15.”
+## Product
 
-## Product shape
+1. **First bell** / **Second bell** only (period start/end, chapel, and TEST ACOC removed from the bells panel).
+2. **Schedule at building time** — hour : minute + AM/PM on Central time; converts to a delay and queues on the gateway (same as before).
+3. **Play now** — one-tap each bell.
+4. **Cancel** — pending jobs list on the bells page (LAN) or remote queue when the PIN has remote.
 
-1. **Pick a bell** (period end / chapel / etc.).
-2. **Pick a building time** — time-of-day on the campus clock (e.g. 10:15 AM Central).
-3. **Confirm** — show “Rings at 10:15 AM Central (in 12 min)” before arming.
-4. **Survives closing the phone** — job lives on the Pi gateway (same as today).
-5. **Cancel** — same scheduled list UI.
+## Audio (pending clips)
 
-Optional later: recurring weekday period schedule (stored on gateway or Worker), not required for v1.
+Wire Protect ringtone IDs on the Pi when the files are uploaded:
 
-## Technical approach
+| Action | `ACTIONS` key | Notes |
+|---|---|---|
+| First bell | `bells.first` | Placeholder may still be TEST ACOC until real clip is on the NVR |
+| Second bell | `bells.second` | Same |
 
-| Piece | Change |
-|---|---|
-| UI (`apps/web/public`) | Time picker (hour/minute + AM/PM) next to “Ring in 15 min”; compute `delayMinutes` from building clock vs now in `America/Chicago`. |
-| Gateway | Keep relative `delayMinutes` for v1 **or** add `fireAt` (epoch ms) / `atLocal` (`HH:mm` + timezone) so the Pi owns the clock math. Prefer **`fireAt` UTC ms** computed on the client from Central wall time — avoids Pi TZ drift if Pi timezone is wrong. |
-| Remote queue | Extend Worker queue job with optional `fireAt`; Pi schedules with `setTimeout` until fire (cap max horizon, e.g. 12 hours). |
-| DST | Always compute with `America/Chicago` (Temporal or careful `Intl`/`date-fns-tz`). Never use browser local TZ for fire time. |
-| Safety | Reject past times; confirm if within 60s; max one pending job per action unless staff cancels. |
-
-## UX sketch
-
-```
-[ Building clock  9:58:12 AM ]
-
-Ring at building time
-  [ 10 ] : [ 15 ]  [ AM ▾ ]   Bell: Period end ▾
-  [ Schedule ring ]
-
-After service (shortcut)
-  [ Ring period end in 15 min ]
+```bash
+# on Pi ~/.config/arnold-alarm/gateway.env — ACTIONS JSON
+"bells.first": { "kind": "ringtone", "ringtoneId": "<id>" },
+"bells.second": { "kind": "ringtone", "ringtoneId": "<id>" }
 ```
 
-## Rollout
+Then `sudo systemctl restart arnold-alarm-gateway`.
 
-1. Ship absolute-time UI that converts to existing `delayMinutes` (no gateway change) — fastest.
-2. If jobs span reboot or long delays matter, persist schedules on the Pi (`~/.config/arnold-alarm/schedules.json`) and restore timers on gateway start.
-3. Only then add recurring weekly periods if the school asks.
+## Technical
 
-## Out of scope for first pass
+- Worker `BELL_ACTIONS`: `bells.first:First bell,bells.second:Second bell`
+- Client computes `delayMinutes` from Central wall time (max 12 hours; if time already passed today, schedules tomorrow).
+- Gateway still uses relative `delayMinutes` / `setTimeout`.
 
-- Syncing UniFi Protect automation schedules
-- Multi-building timezones
-- Calendar import
+## Later (optional)
 
-## Acceptance
-
-- Staff can set “ring at 10:15” while looking at the building clock and hear the bell within a few seconds of 10:15 Central.
-- Cancel works from the same phone (on Wi‑Fi) or remote PIN.
-- README + bells UI copy updated; no speaker test required to ship the UI (verify once on an empty campus).
+- Persist schedules across Pi reboot
+- Recurring weekday period schedule

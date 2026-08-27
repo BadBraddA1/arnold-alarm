@@ -85,7 +85,9 @@ Emergency + bell clips use Protect **ringtones** (`PLAY_SPEAKER` on all speaker 
 | Code Green au | `6a3be77003a4b103e436e524` |
 | TEST ACOC | `6a3b089901a2b103e432add8` |
 
-**Speaker check / test mode** plays the Protect **TEST ACOC** ringtone on all AI speakers (same clip as Class bells → TEST ACOC). Source file on the Pi: `~/.config/arnold-alarm/audio/TEST_ACOC.ogg` (~16 sec). The old Protect built-in test-sound beep is no longer used for this button.
+**Speaker check / test mode** plays the Protect **TEST ACOC** ringtone on all AI speakers. Source file on the Pi: `~/.config/arnold-alarm/audio/TEST_ACOC.ogg` (~16 sec).
+
+**Class bells** are **First bell** / **Second bell** (`bells.first` / `bells.second`). Until the real clips are uploaded to Protect, those ACTIONS may still point at the TEST ACOC ringtone ID as a placeholder.
 
 `PROTECT_USER` / `PROTECT_PASS` must be a **local Protect admin** on the UNVR (Settings → Admins → local access). SSH `root` is not the same account.
 
@@ -96,15 +98,14 @@ Emergency + bell clips use Protect **ringtones** (`PLAY_SPEAKER` on all speaker 
 ## Class bells UI
 
 - Big **building clock** (America/Chicago).
-- **Ring in 15 min** after service (timer on the Pi).
-- Play-now buttons per automation.
-- **Planned:** schedule rings at an absolute building time — see [`docs/BELLS-BUILDING-TIME.md`](docs/BELLS-BUILDING-TIME.md).
+- **First bell** / **Second bell** — play now, or **schedule at building time** (hour:minute AM/PM Central).
+- Schedule survives closing the page (timer on the Pi). See [`docs/BELLS-BUILDING-TIME.md`](docs/BELLS-BUILDING-TIME.md).
 
 ## Emergency codes UI
 
 - **Code Red** / **Code Blue** in thumb reach (sticky bottom), color-matched; **hold to confirm** (Cancel sits above).
 - **Stop & All clear** is green (Code Green ×2 only — not a direct Code Green play button).
-- **TEST ACOC** speaker check sits under “Speaker check / test mode” (and on Home).
+- **TEST ACOC** speaker check sits under “Speaker check / test mode” (and on Home) — separate from class bells.
 
 ## Ops / safety notes
 

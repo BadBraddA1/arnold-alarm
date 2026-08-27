@@ -334,7 +334,7 @@ function renderHome() {
             : ""
         }
         <div class="tile-grid">
-          ${canBells ? `<button type="button" class="tile" data-go="bells"><h2>Class bells</h2><p>Play period and chapel tones on campus speakers.</p></button>` : ""}
+          ${canBells ? `<button type="button" class="tile" data-go="bells"><h2>Class bells</h2><p>First and second bell — play now or schedule to building time.</p></button>` : ""}
           ${canEvac ? `<button type="button" class="tile" data-go="evacuate"><h2>Emergency codes</h2><p>Code Red, Blue, and Green announcements.</p></button>` : ""}
           ${canAdmin ? `<button type="button" class="tile" data-go="admin"><h2>PIN admin</h2><p>Add or revoke staff PINs.</p></button>` : ""}
         </div>
@@ -475,6 +475,8 @@ function actionLabel(actionId) {
   if (actionId === "__all_clear__") return "Stop & All clear (Code Green ×2)";
   if (actionId === "__stop__") return "Stop speakers";
   if (actionId === "test.speakers") return "TEST ACOC — speaker check";
+  if (actionId === "bells.first") return "First bell";
+  if (actionId === "bells.second") return "Second bell";
   if (actionId === "bells.test") return "TEST ACOC";
   if (actionId === "__system_armed__") return "System armed";
   if (actionId === "__system_unarmed__") return "System unarmed";
@@ -706,11 +708,88 @@ async function refreshSchedule(listEl) {
   }
 }
 
+function chicagoParts(date = new Date()) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    })
+      .formatToParts(date)
+      .filter((p) => p.type !== "literal")
+      .map((p) => [p.type, p.value]),
+  );
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour) % 24,
+    minute: Number(parts.minute),
+    second: Number(parts.second),
+  };
+}
+
+/** UTC ms for a wall-clock time in America/Chicago. */
+function chicagoWallToUtcMs(year, month, day, hour24, minute) {
+  let guess = Date.UTC(year, month - 1, day, hour24, minute, 0);
+  for (let i = 0; i < 4; i++) {
+    const p = chicagoParts(new Date(guess));
+    const asIfUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+    const want = Date.UTC(year, month - 1, day, hour24, minute, 0);
+    guess += want - asIfUtc;
+  }
+  return guess;
+}
+
+/**
+ * Minutes from now until building (Central) hour:minute AM/PM.
+ * Returns null if that time already passed today.
+ */
+function delayMinutesUntilBuildingTime(hour12, minute, ampm) {
+  let h = Number(hour12) % 12;
+  if (String(ampm).toUpperCase() === "PM") h += 12;
+  if (String(ampm).toUpperCase() === "AM" && Number(hour12) === 12) h = 0;
+  const m = Math.max(0, Math.min(59, Number(minute) || 0));
+  const now = new Date();
+  const c = chicagoParts(now);
+  let target = chicagoWallToUtcMs(c.year, c.month, c.day, h, m);
+  if (target <= now.getTime() + 5_000) {
+    // already passed (or within 5s) — try tomorrow
+    const tomorrow = new Date(Date.UTC(c.year, c.month - 1, c.day) + 36 * 3600_000);
+    const t = chicagoParts(tomorrow);
+    target = chicagoWallToUtcMs(t.year, t.month, t.day, h, m);
+  }
+  const mins = Math.ceil((target - now.getTime()) / 60_000);
+  if (mins < 1) return null;
+  if (mins > 12 * 60) return null; // cap 12h
+  return mins;
+}
+
+function formatBuildingTarget(hour12, minute, ampm) {
+  const hh = String(hour12);
+  const mm = String(minute).padStart(2, "0");
+  return `${hh}:${mm} ${String(ampm).toUpperCase()} Central`;
+}
+
 function renderBells() {
   const actions = state.config?.bellActions || [];
-  const def =
-    actions.find((a) => a.id.includes("period_end") || a.id.includes("end")) ||
-    actions[0];
+  const first = actions.find((a) => a.id === "bells.first") || actions[0];
+  const second = actions.find((a) => a.id === "bells.second") || actions[1];
+  const nowC = chicagoParts();
+  let hour12 = nowC.hour % 12 || 12;
+  let ampm = nowC.hour >= 12 ? "PM" : "AM";
+  // default schedule suggestion: next round 15 min
+  const suggest = new Date(Date.now() + 15 * 60_000);
+  const s = chicagoParts(suggest);
+  hour12 = s.hour % 12 || 12;
+  ampm = s.hour >= 12 ? "PM" : "AM";
+  const suggestMin = s.minute;
+
   app.innerHTML = `
     <main class="app-shell">
       ${header(state.session.label)}
@@ -719,26 +798,81 @@ function renderBells() {
         ${clockHtml()}
         <div>
           <h1 class="page-title">Class bells</h1>
-          <p class="muted" style="margin:0">${playHint()} Schedule survives closing this page.</p>
+          <p class="muted" style="margin:0">${playHint()} Times use the building clock (Central).</p>
         </div>
-        ${
-          def
-            ? `<div class="card stack">
-                <p style="margin:0;font-weight:600">After service</p>
-                <p class="muted" style="margin:0;font-size:0.9rem">Service just ended? Queue the bell for 15 minutes.</p>
-                <button type="button" class="btn btn-ghost btn-block" data-schedule="${escapeHtml(def.id)}" data-label="${escapeHtml(def.label)}">Ring “${escapeHtml(def.label)}” in 15 min</button>
-                <div id="sched-list"></div>
-                <div id="sched-msg"></div>
-              </div>`
-            : ""
-        }
+        <div class="card stack" style="gap:0.75rem">
+          <p style="margin:0;font-weight:600">Schedule at building time</p>
+          <p class="muted" style="margin:0;font-size:0.85rem">Pick first or second bell and a Central time. Survives closing this page.</p>
+          <div class="field">
+            <label>Bell</label>
+            <select id="bell-which" style="width:100%;min-height:2.75rem;padding:0.5rem 0.75rem;border-radius:var(--radius);border:1px solid var(--line);background:var(--bg);color:inherit;font:inherit">
+              ${first ? `<option value="${escapeHtml(first.id)}">${escapeHtml(first.label)}</option>` : ""}
+              ${second ? `<option value="${escapeHtml(second.id)}">${escapeHtml(second.label)}</option>` : ""}
+            </select>
+          </div>
+          <div style="display:flex;gap:0.5rem;align-items:flex-end;flex-wrap:wrap">
+            <div class="field" style="margin:0;flex:0 0 4.5rem">
+              <label>Hour</label>
+              <input id="bell-hour" inputmode="numeric" maxlength="2" value="${hour12}" style="text-align:center" />
+            </div>
+            <span style="padding-bottom:0.65rem;font-weight:600">:</span>
+            <div class="field" style="margin:0;flex:0 0 4.5rem">
+              <label>Min</label>
+              <input id="bell-min" inputmode="numeric" maxlength="2" value="${String(suggestMin).padStart(2, "0")}" style="text-align:center" />
+            </div>
+            <div class="field" style="margin:0;flex:0 0 5.5rem">
+              <label>AM/PM</label>
+              <select id="bell-ampm" style="width:100%;min-height:2.75rem;padding:0.5rem;border-radius:var(--radius);border:1px solid var(--line);background:var(--bg);color:inherit;font:inherit">
+                <option value="AM" ${ampm === "AM" ? "selected" : ""}>AM</option>
+                <option value="PM" ${ampm === "PM" ? "selected" : ""}>PM</option>
+              </select>
+            </div>
+          </div>
+          <button type="button" class="btn btn-primary btn-block" id="bell-schedule">Schedule ring</button>
+          <div id="sched-msg"></div>
+          <div id="sched-list"></div>
+        </div>
         <p class="muted" style="margin:0.5rem 0 0;font-size:0.85rem">Play now</p>
         ${actions.map((a) => `<button type="button" class="btn btn-primary btn-block" data-play="${escapeHtml(a.id)}">${escapeHtml(a.label)}</button>`).join("")}
         <div id="play-msg"></div>
+        <p class="muted" style="margin:0;font-size:0.8rem">Audio for first/second bell is wired on the gateway once the clips are on the NVR.</p>
       </div>
     </main>`;
   tickClock();
   void refreshSchedule($("#sched-list"));
+
+  $("#bell-schedule")?.addEventListener("click", () => {
+    const actionId = $("#bell-which")?.value;
+    const hour = Number($("#bell-hour")?.value);
+    const minute = Number($("#bell-min")?.value);
+    const ap = $("#bell-ampm")?.value || "AM";
+    const msg = $("#sched-msg");
+    if (!actionId) {
+      if (msg) msg.innerHTML = `<div class="error-banner">No bell selected.</div>`;
+      return;
+    }
+    if (!(hour >= 1 && hour <= 12) || !(minute >= 0 && minute <= 59)) {
+      if (msg) msg.innerHTML = `<div class="error-banner">Enter a valid time (1–12 : 00–59).</div>`;
+      return;
+    }
+    const delay = delayMinutesUntilBuildingTime(hour, minute, ap);
+    if (delay == null) {
+      if (msg) {
+        msg.innerHTML = `<div class="error-banner">Could not schedule that time (past or more than 12 hours away).</div>`;
+      }
+      return;
+    }
+    const label = actionId === "bells.second" ? "Second bell" : "First bell";
+    const when = formatBuildingTarget(hour, minute, ap);
+    if (msg) {
+      msg.innerHTML = `<div class="muted">Scheduling ${escapeHtml(label)} for ${escapeHtml(when)} (in ${delay} min)…</div>`;
+    }
+    void scheduleAction(actionId, label, delay, msg, $("#sched-list")).then(() => {
+      if (msg && !msg.querySelector(".error-banner")) {
+        msg.innerHTML = `<div class="success-banner">Scheduled ${escapeHtml(label)} at ${escapeHtml(when)} (in about ${delay} min).</div>`;
+      }
+    });
+  });
 }
 
 function evacCodeTone(actionId) {
