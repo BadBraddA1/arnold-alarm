@@ -7,11 +7,12 @@ export type PinRow = {
   scopes: string;
   active: number;
   created_at: string;
+  must_change_pin: number;
 };
 
 export async function listActivePins(env: Env): Promise<PinRow[]> {
   const { results } = await env.DB.prepare(
-    `SELECT id, label, pin_hash, scopes, active, created_at
+    `SELECT id, label, pin_hash, scopes, active, created_at, must_change_pin
      FROM alarm_pins WHERE active = 1 ORDER BY created_at ASC`,
   ).all<PinRow>();
   return results ?? [];
@@ -19,26 +20,62 @@ export async function listActivePins(env: Env): Promise<PinRow[]> {
 
 export async function listAllPins(env: Env) {
   const { results } = await env.DB.prepare(
-    `SELECT id, label, scopes, active, created_at FROM alarm_pins ORDER BY created_at ASC`,
+    `SELECT id, label, scopes, active, created_at, must_change_pin
+     FROM alarm_pins ORDER BY created_at ASC`,
   ).all<{
     id: string;
     label: string;
     scopes: string;
     active: number;
     created_at: string;
+    must_change_pin: number;
   }>();
   return results ?? [];
 }
 
+export async function getPinById(env: Env, id: string) {
+  return env.DB.prepare(
+    `SELECT id, label, pin_hash, scopes, active, created_at, must_change_pin
+     FROM alarm_pins WHERE id = ?`,
+  )
+    .bind(id)
+    .first<PinRow>();
+}
+
 export async function insertPin(
   env: Env,
-  input: { id: string; label: string; pinHash: string; scopes: string[] },
+  input: {
+    id: string;
+    label: string;
+    pinHash: string;
+    scopes: string[];
+    mustChangePin?: boolean;
+  },
 ) {
   await env.DB.prepare(
-    `INSERT INTO alarm_pins (id, label, pin_hash, scopes, active)
-     VALUES (?, ?, ?, ?, 1)`,
+    `INSERT INTO alarm_pins (id, label, pin_hash, scopes, active, must_change_pin)
+     VALUES (?, ?, ?, ?, 1, ?)`,
   )
-    .bind(input.id, input.label, input.pinHash, JSON.stringify(input.scopes))
+    .bind(
+      input.id,
+      input.label,
+      input.pinHash,
+      JSON.stringify(input.scopes),
+      input.mustChangePin ? 1 : 0,
+    )
+    .run();
+}
+
+export async function setPinHash(
+  env: Env,
+  id: string,
+  pinHash: string,
+  mustChangePin: boolean,
+) {
+  await env.DB.prepare(
+    `UPDATE alarm_pins SET pin_hash = ?, must_change_pin = ? WHERE id = ?`,
+  )
+    .bind(pinHash, mustChangePin ? 1 : 0, id)
     .run();
 }
 

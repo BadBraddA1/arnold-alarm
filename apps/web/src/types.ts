@@ -4,6 +4,8 @@ export type SessionPayload = {
   pinId: string;
   label: string;
   scopes: Scope[];
+  /** True until the user replaces a temp PIN with their own. */
+  mustChangePin?: boolean;
 };
 
 export const SESSION_COOKIE = "arnold_alarm_session";

@@ -16,6 +16,7 @@ export async function signSession(env: Env, payload: SessionPayload): Promise<st
     pinId: payload.pinId,
     label: payload.label,
     scopes: payload.scopes,
+    mustChangePin: !!payload.mustChangePin,
   })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
@@ -37,6 +38,7 @@ export async function verifySession(
       pinId: String(payload.pinId),
       label: String(payload.label),
       scopes: (payload.scopes as Scope[]) ?? [],
+      mustChangePin: !!payload.mustChangePin,
       expiresAt: exp,
     };
   } catch {

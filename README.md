@@ -48,6 +48,8 @@ Vars in `wrangler.jsonc`: `GATEWAY_URL`, `BELL_ACTIONS`, `EVACUATE_ACTION`.
 
 PIN admin: sign in with an admin-scoped PIN → **PIN admin**.
 
+**Temp PINs:** check **Temp PIN** when adding someone. Leave the PIN blank to auto-generate (shown once). On first login they must set their own 6-digit PIN before bells/emergency work. Status shows “Temp — awaiting change” until they do.
+
 ## Pi gateway
 
 Bootstrap (on Pi):

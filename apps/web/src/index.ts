@@ -13,7 +13,9 @@ import {
   listActivePins,
   listAllPins,
   listAudit,
+  getPinById,
   setPinActive,
+  setPinHash,
   touchGatewayHeartbeat,
   getGatewayHeartbeat,
   updateAuditStatus,
@@ -52,6 +54,11 @@ function parseScopesField(raw: string): Scope[] {
   } catch {
     return normalizeScopes(raw.split(",").map((s) => s.trim()));
   }
+}
+
+function randomTempPin(): string {
+  const n = crypto.getRandomValues(new Uint32Array(1))[0]! % 1_000_000;
+  return String(n).padStart(6, "0");
 }
 
 function gatewayAuthorized(c: {
@@ -94,6 +101,7 @@ app.get("/api/auth/session", (c) => {
     authenticated: true,
     label: session.label,
     scopes: session.scopes,
+    mustChangePin: !!session.mustChangePin,
     expiresAt: session.expiresAt,
     idleSec: SESSION_IDLE_SEC,
     maxAgeSec: SESSION_MAX_AGE_SEC,
@@ -128,10 +136,12 @@ app.post("/api/auth/pin", async (c) => {
 
   await clearRateLimit(c.env, ip);
   const scopes = parseScopesField(matched.scopes);
+  const mustChangePin = !!matched.must_change_pin;
   const token = await signSession(c.env, {
     pinId: matched.id,
     label: matched.label,
     scopes,
+    mustChangePin,
   });
   setCookie(c, SESSION_COOKIE, token, {
     httpOnly: true,
@@ -144,6 +154,7 @@ app.post("/api/auth/pin", async (c) => {
     ok: true,
     label: matched.label,
     scopes,
+    mustChangePin,
     expiresAt: Date.now() + SESSION_MAX_AGE_SEC * 1000,
     idleSec: SESSION_IDLE_SEC,
     maxAgeSec: SESSION_MAX_AGE_SEC,
@@ -155,9 +166,67 @@ app.post("/api/auth/logout", (c) => {
   return c.json({ ok: true });
 });
 
+app.post("/api/auth/change-pin", async (c) => {
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+  const body = (await c.req.json().catch(() => ({}))) as {
+    pin?: string;
+    confirm?: string;
+  };
+  const pin = (body.pin ?? "").replace(/\D/g, "");
+  const confirm = (body.confirm ?? "").replace(/\D/g, "");
+  if (!/^\d{6}$/.test(pin)) {
+    return c.json({ error: "Enter a new 6-digit PIN." }, 400);
+  }
+  if (pin !== confirm) {
+    return c.json({ error: "PINs do not match." }, 400);
+  }
+
+  const row = await getPinById(c.env, session.pinId);
+  if (!row || !row.active) {
+    return c.json({ error: "PIN account not found." }, 404);
+  }
+  if (await bcrypt.compare(pin, row.pin_hash)) {
+    return c.json(
+      { error: "Choose a new PIN — it cannot be the same as the temporary one." },
+      400,
+    );
+  }
+
+  const pinHash = await bcrypt.hash(pin, 10);
+  await setPinHash(c.env, session.pinId, pinHash, false);
+
+  const scopes = parseScopesField(row.scopes);
+  const token = await signSession(c.env, {
+    pinId: session.pinId,
+    label: row.label,
+    scopes,
+    mustChangePin: false,
+  });
+  setCookie(c, SESSION_COOKIE, token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "Lax",
+    path: "/",
+    maxAge: SESSION_MAX_AGE_SEC,
+  });
+  return c.json({
+    ok: true,
+    label: row.label,
+    scopes,
+    mustChangePin: false,
+    expiresAt: Date.now() + SESSION_MAX_AGE_SEC * 1000,
+    idleSec: SESSION_IDLE_SEC,
+    maxAgeSec: SESSION_MAX_AGE_SEC,
+  });
+});
 app.post("/api/play-token", async (c) => {
   const session = c.get("session");
   if (!session) return c.json({ error: "Unauthorized" }, 401);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
   const body = (await c.req.json().catch(() => ({}))) as { actionId?: string };
   const actionId = body.actionId?.trim();
   if (!actionId) return c.json({ error: "actionId required" }, 400);
@@ -181,6 +250,9 @@ app.post("/api/play-token", async (c) => {
 app.post("/api/play-remote", async (c) => {
   const session = c.get("session");
   if (!session) return c.json({ error: "Unauthorized" }, 401);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
   if (!hasScope(session.scopes, "remote")) {
     return c.json(
       {
@@ -242,6 +314,9 @@ app.post("/api/play-remote", async (c) => {
 app.post("/api/stop-remote", async (c) => {
   const session = c.get("session");
   if (!session) return c.json({ error: "Unauthorized" }, 401);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
   if (!hasScope(session.scopes, "remote")) {
     return c.json({ error: "Remote all clear requires remote play access." }, 403);
   }
@@ -367,6 +442,9 @@ app.get("/api/audit", async (c) => {
 app.post("/api/audit", async (c) => {
   const session = c.get("session");
   if (!session) return c.json({ error: "Unauthorized" }, 401);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
   const body = (await c.req.json().catch(() => ({}))) as {
     actionId?: string;
     mode?: string;
@@ -394,6 +472,9 @@ app.post("/api/audit", async (c) => {
 app.get("/api/admin/pins", async (c) => {
   const session = c.get("session");
   if (!session?.scopes.includes("admin")) return c.json({ error: "Forbidden" }, 403);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
   const rows = await listAllPins(c.env);
   return c.json({
     pins: rows.map((p) => ({
@@ -401,6 +482,7 @@ app.get("/api/admin/pins", async (c) => {
       label: p.label,
       scopes: parseScopesField(p.scopes),
       active: !!p.active,
+      mustChangePin: !!p.must_change_pin,
       created_at: p.created_at,
     })),
   });
@@ -409,14 +491,21 @@ app.get("/api/admin/pins", async (c) => {
 app.post("/api/admin/pins", async (c) => {
   const session = c.get("session");
   if (!session?.scopes.includes("admin")) return c.json({ error: "Forbidden" }, 403);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
   const body = (await c.req.json().catch(() => ({}))) as {
     label?: string;
     pin?: string;
     scopes?: string[];
+    temp?: boolean;
   };
-  const pin = (body.pin ?? "").replace(/\D/g, "");
   const label = (body.label ?? "").trim();
-  if (!label || !/^\d{6}$/.test(pin)) {
+  const temp = !!body.temp;
+  let pin = (body.pin ?? "").replace(/\D/g, "");
+  if (!label) return c.json({ error: "label required" }, 400);
+  if (temp && !pin) pin = randomTempPin();
+  if (!/^\d{6}$/.test(pin)) {
     return c.json({ error: "label and 6-digit pin required" }, 400);
   }
   const scopes = normalizeScopes(body.scopes ?? ["bells"]);
@@ -425,13 +514,30 @@ app.post("/api/admin/pins", async (c) => {
   }
   const id = crypto.randomUUID();
   const pinHash = await bcrypt.hash(pin, 10);
-  await insertPin(c.env, { id, label, pinHash, scopes });
-  return c.json({ ok: true, id, label, scopes });
+  await insertPin(c.env, {
+    id,
+    label,
+    pinHash,
+    scopes,
+    mustChangePin: temp,
+  });
+  return c.json({
+    ok: true,
+    id,
+    label,
+    scopes,
+    mustChangePin: temp,
+    /** Only returned once — for handing the temp PIN to the person. */
+    tempPin: temp ? pin : undefined,
+  });
 });
 
 app.patch("/api/admin/pins", async (c) => {
   const session = c.get("session");
   if (!session?.scopes.includes("admin")) return c.json({ error: "Forbidden" }, 403);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
   const body = (await c.req.json().catch(() => ({}))) as {
     id?: string;
     active?: boolean;

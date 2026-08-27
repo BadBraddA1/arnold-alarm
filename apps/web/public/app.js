@@ -32,7 +32,11 @@ function touchActivity() {
 }
 
 function setSessionFromAuth(data) {
-  state.session = { label: data.label, scopes: data.scopes };
+  state.session = {
+    label: data.label,
+    scopes: data.scopes,
+    mustChangePin: !!data.mustChangePin,
+  };
   state.expiresAt = data.expiresAt || Date.now() + (data.maxAgeSec || 2700) * 1000;
   state.idleSec = data.idleSec || 30 * 60;
   touchActivity();
@@ -70,6 +74,12 @@ function armIdleWatch() {
 }
 
 function setRoute(route) {
+  if (state.session?.mustChangePin && route !== "change-pin" && route !== "pin") {
+    state.route = "change-pin";
+    state.message = null;
+    render();
+    return;
+  }
   state.route = route;
   if (route !== "pin") state.message = null;
   render();
@@ -188,7 +198,7 @@ function wirePin() {
       return;
     }
     setSessionFromAuth(data);
-    setRoute("home");
+    setRoute(data.mustChangePin ? "change-pin" : "home");
   }
 
   inputs.forEach((input, i) => {
@@ -211,6 +221,56 @@ function wirePin() {
     });
     if (text.length === 6) void submit(text);
     else inputs[text.length]?.focus();
+  });
+}
+
+function renderChangePin() {
+  app.innerHTML = `
+    <main class="app-shell pin-shell">
+      <div class="card stack pin-card" style="gap:1.1rem">
+        <div>
+          <div class="brand" style="margin-bottom:0.35rem">Arnold <span>Alarm</span></div>
+          <h1 class="page-title" style="margin-bottom:0.25rem">Choose your PIN</h1>
+          <p class="muted" style="margin:0">
+            Hi ${escapeHtml(state.session.label)} — you signed in with a temporary PIN.
+            Set a personal 6-digit PIN now. You cannot use alarm features until this is done.
+          </p>
+        </div>
+        <form class="stack" id="change-pin-form" style="gap:0.85rem">
+          <div class="field">
+            <label>New 6-digit PIN</label>
+            <input name="pin" inputmode="numeric" maxlength="6" pattern="\\d{6}" required autocomplete="new-password" />
+          </div>
+          <div class="field">
+            <label>Confirm PIN</label>
+            <input name="confirm" inputmode="numeric" maxlength="6" pattern="\\d{6}" required autocomplete="new-password" />
+          </div>
+          <button class="btn btn-primary btn-block" type="submit">Save permanent PIN</button>
+        </form>
+        <div id="change-pin-msg"></div>
+        <button type="button" class="btn btn-ghost btn-block" data-action="logout">Sign out</button>
+      </div>
+    </main>`;
+
+  $("#change-pin-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const msg = $("#change-pin-msg");
+    msg.innerHTML = `<p class="muted">Saving…</p>`;
+    const { res, data } = await api("/api/auth/change-pin", {
+      method: "POST",
+      body: JSON.stringify({
+        pin: fd.get("pin"),
+        confirm: fd.get("confirm"),
+      }),
+    });
+    if (!res.ok) {
+      msg.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not save PIN.")}</div>`;
+      return;
+    }
+    setSessionFromAuth(data);
+    state.message = { kind: "ok", text: "PIN saved. You’re ready to use Arnold Alarm." };
+    setRoute("home");
   });
 }
 
@@ -746,12 +806,16 @@ async function renderAdmin() {
         </div>
         <form class="card stack" id="pin-form">
           <div class="field"><label>Label</label><input name="label" required placeholder="Office desk" /></div>
-          <div class="field"><label>6-digit PIN</label><input name="pin" inputmode="numeric" maxlength="6" pattern="\\d{6}" required /></div>
+          <div class="field">
+            <label>6-digit PIN <span class="muted">(leave blank if temp — we’ll generate one)</span></label>
+            <input name="pin" inputmode="numeric" maxlength="6" pattern="\\d{6}" placeholder="Optional for temp" />
+          </div>
           <div class="checks">
             <label><input type="checkbox" name="bells" checked /> Class bells</label>
             <label><input type="checkbox" name="evacuate" /> Evacuation</label>
             <label><input type="checkbox" name="admin" /> Admin</label>
             <label><input type="checkbox" name="remote" /> Remote play (off campus)</label>
+            <label><input type="checkbox" name="temp" /> Temp PIN (must change on first login)</label>
           </div>
           <button class="btn btn-primary" type="submit">Add PIN</button>
           <div id="admin-msg"></div>
@@ -765,7 +829,7 @@ async function renderAdmin() {
                   (p) => `<tr>
                   <td>${escapeHtml(p.label)}</td>
                   <td>${escapeHtml((p.scopes || []).join(", "))}</td>
-                  <td>${p.active ? "Active" : "Revoked"}</td>
+                  <td>${!p.active ? "Revoked" : p.mustChangePin ? "Temp — awaiting change" : "Active"}</td>
                   <td><button type="button" class="btn btn-ghost" style="min-height:2.25rem;padding:0.4rem 0.7rem" data-toggle="${escapeHtml(p.id)}" data-active="${p.active ? "1" : "0"}">${p.active ? "Revoke" : "Restore"}</button></td>
                 </tr>`,
                 )
@@ -784,12 +848,19 @@ async function renderAdmin() {
     if (fd.get("evacuate")) scopes.push("evacuate");
     if (fd.get("admin")) scopes.push("admin");
     if (fd.get("remote")) scopes.push("remote");
+    const temp = !!fd.get("temp");
+    const pin = String(fd.get("pin") || "").replace(/\D/g, "");
+    if (!temp && !/^\d{6}$/.test(pin)) {
+      $("#admin-msg").innerHTML = `<div class="error-banner">Enter a 6-digit PIN, or check Temp PIN to auto-generate.</div>`;
+      return;
+    }
     const { res, data } = await api("/api/admin/pins", {
       method: "POST",
       body: JSON.stringify({
         label: fd.get("label"),
-        pin: fd.get("pin"),
+        pin: pin || undefined,
         scopes,
+        temp,
       }),
     });
     const msg = $("#admin-msg");
@@ -797,8 +868,15 @@ async function renderAdmin() {
       msg.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Failed")}</div>`;
       return;
     }
-    msg.innerHTML = `<div class="success-banner">PIN created.</div>`;
+    let keep = "";
+    if (data.tempPin) {
+      keep = `<div class="success-banner">Temp PIN for <strong>${escapeHtml(data.label)}</strong>: <strong style="font-size:1.25rem;letter-spacing:0.12em">${escapeHtml(data.tempPin)}</strong><br/><span class="muted">Copy it now — it won’t be shown again. They must change it on first login.</span></div>`;
+    } else {
+      keep = `<div class="success-banner">PIN created.</div>`;
+    }
     await renderAdmin();
+    const after = $("#admin-msg");
+    if (after) after.innerHTML = keep;
   });
 
   document.querySelectorAll("[data-toggle]").forEach((btn) => {
@@ -818,6 +896,10 @@ async function renderAdmin() {
 function render() {
   if (!state.session) {
     renderPin();
+    return;
+  }
+  if (state.session.mustChangePin || state.route === "change-pin") {
+    renderChangePin();
     return;
   }
   if (state.route === "home") renderHome();
@@ -915,7 +997,7 @@ async function boot() {
   const sess = await api("/api/auth/session");
   if (sess.res.ok && sess.data.authenticated) {
     setSessionFromAuth(sess.data);
-    state.route = "home";
+    state.route = sess.data.mustChangePin ? "change-pin" : "home";
   }
   render();
   void checkGateway();
