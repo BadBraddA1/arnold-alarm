@@ -336,7 +336,12 @@ async function triggerTestSound(speakerIds: string[]) {
   if (!speakerIds.length) throw new Error("No speakerIds configured");
 
   const errors: string[] = [];
-  for (const id of speakerIds) {
+  let ok = 0;
+  for (let i = 0; i < speakerIds.length; i++) {
+    const id = speakerIds[i];
+    if (i > 0) {
+      await new Promise((r) => setTimeout(r, 1200));
+    }
     const url = `${protectBase()}/proxy/protect/integration/v1/speakers/${encodeURIComponent(id)}/test-sound`;
     const result = await insecureFetch(url, {
       method: "POST",
@@ -347,13 +352,17 @@ async function triggerTestSound(speakerIds: string[]) {
       },
       body: "{}",
     });
-    // 204 No Content is success
     if (result.status >= 400) {
       errors.push(`${id}: ${result.status} ${result.text.slice(0, 120)}`);
+    } else {
+      ok++;
     }
   }
-  if (errors.length) {
+  if (!ok) {
     throw new Error(`test-sound failed: ${errors.join("; ")}`);
+  }
+  if (errors.length) {
+    console.warn(`[test-sound] partial: ${ok}/${speakerIds.length}`, errors);
   }
 }
 

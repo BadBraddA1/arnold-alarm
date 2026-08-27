@@ -59,6 +59,9 @@ export function actionAllowed(actionId: string, scopes: Scope[]): boolean {
   // All clear only via Stop & All Clear — not a standalone play button.
   if (actionId === "evacuate.code_green") return false;
   if (actionId === "__all_clear__") return hasScope(scopes, "evacuate");
+  if (actionId === "test.speakers") {
+    return hasScope(scopes, "bells") || hasScope(scopes, "evacuate");
+  }
   if (scopes.includes("admin")) return true;
   if (actionId.startsWith("bells.") && hasScope(scopes, "bells")) return true;
   if (actionId.startsWith("evacuate.") && hasScope(scopes, "evacuate")) return true;

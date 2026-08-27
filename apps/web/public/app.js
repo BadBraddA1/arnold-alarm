@@ -250,6 +250,7 @@ function actionLabel(actionId) {
   const hit = [...bells, ...evacs].find((a) => a.id === actionId);
   if (actionId === "__all_clear__") return "Stop & All clear (Code Green ×2)";
   if (actionId === "__stop__") return "Stop speakers";
+  if (actionId === "test.speakers") return "Test tone — all speakers";
   return hit?.label || actionId;
 }
 
@@ -330,7 +331,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
   }
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8000);
+    const timer = setTimeout(() => ctrl.abort(), actionId === "test.speakers" ? 20000 : 8000);
     const playRes = await fetch(`${data.gatewayUrl}/play`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -344,7 +345,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
       return;
     }
     await logAudit(actionId, "lan", "done", loop ? "loop" : undefined);
-    msgEl.innerHTML = `<div class="success-banner">${loop ? "Playing on speakers (looping)." : "Sent to speakers."}</div>`;
+    msgEl.innerHTML = `<div class="success-banner">${actionId === "test.speakers" ? "Test tone sent to all speakers — listen at each location." : loop ? "Playing on speakers (looping)." : "Sent to speakers."}</div>`;
   } catch {
     msgEl.innerHTML = `<div class="error-banner">Cannot reach the alarm gateway. Join the church Wi‑Fi network and try again — or ask an admin for remote play access.</div>`;
   }
@@ -499,6 +500,11 @@ function renderEvacuate() {
             return `<button type="button" class="btn btn-danger btn-block" data-arm-evac="${escapeHtml(a.id)}" data-label="${escapeHtml(a.label)}">${escapeHtml(a.label)}</button>`;
           })
           .join("")}
+        <p class="muted" style="margin:0.75rem 0 0;font-size:0.85rem">Speaker check</p>
+        <button type="button" class="btn btn-ghost btn-block" data-play="test.speakers">
+          Test tone — all speakers
+        </button>
+        <p class="muted" style="margin:0.25rem 0 0;font-size:0.8rem">Built-in Protect test tone, one after another (~6 sec). Walk the building to verify each horn.</p>
         <div id="evac-confirm"></div>
         <div id="play-msg"></div>
       </div>
