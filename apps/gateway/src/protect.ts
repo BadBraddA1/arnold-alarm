@@ -12,7 +12,13 @@ export type ActionDef =
   | { kind: "webhook"; url: string }
   | { kind: "alarmWebhook"; id: string }
   | { kind: "testSound"; speakerIds: string[] }
+  | { kind: "talkback"; file: string; speakerIds: string[] }
   | { kind: "automation"; id: string };
+
+export type PlayOptions = {
+  loop?: boolean;
+  actionId?: string;
+};
 
 export type ActionMap = Record<string, ActionDef>;
 
@@ -118,6 +124,16 @@ async function login(): Promise<Session> {
   cachedSession = { cookie: cookieHeader, csrf };
   return cachedSession;
 }
+
+export async function getProtectAuthHeaders(): Promise<{
+  cookie: string;
+  csrf: string;
+}> {
+  const session = await login();
+  return { cookie: session.cookie, csrf: session.csrf };
+}
+
+export { protectBase };
 
 async function insecureFetch(
   url: string,
@@ -264,7 +280,7 @@ async function triggerTestSound(speakerIds: string[]) {
   }
 }
 
-export async function triggerAction(def: ActionDef) {
+export async function triggerAction(def: ActionDef, options: PlayOptions = {}) {
   if (def.kind === "webhook") {
     await triggerWebhook(def.url);
     return;
@@ -275,6 +291,16 @@ export async function triggerAction(def: ActionDef) {
   }
   if (def.kind === "testSound") {
     await triggerTestSound(def.speakerIds);
+    return;
+  }
+  if (def.kind === "talkback") {
+    const { startTalkback } = await import("./talkback.js");
+    await startTalkback({
+      actionId: options.actionId || "talkback",
+      file: def.file,
+      speakerIds: def.speakerIds,
+      loop: options.loop,
+    });
     return;
   }
   await triggerAutomation(def.id);

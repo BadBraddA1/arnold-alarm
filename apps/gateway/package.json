@@ -8,12 +8,14 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js"
   },
-  "dependencies": {
+    "dependencies": {
     "jose": "^6.0.11",
+    "ws": "^8.18.3",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^22.17.2",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.20.4",
     "typescript": "^5.9.2"
   }

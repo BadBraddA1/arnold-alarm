@@ -268,19 +268,20 @@ function formatCentral(iso) {
   }
 }
 
-async function playAction(actionId, msgEl, delayMinutes = 0) {
+async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
   msgEl.innerHTML = "";
   const canRemote = canRemotePlay();
 
   if (canRemote) {
     const { res, data } = await api("/api/play-remote", {
       method: "POST",
-      body: JSON.stringify({ actionId, delayMinutes }),
+      body: JSON.stringify({ actionId, delayMinutes, loop }),
     });
     if (!res.ok) {
       msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Remote play failed.")}</div>`;
       return;
     }
+    await logAudit(actionId, "remote", delayMinutes > 0 ? "scheduled" : "queued", loop ? "loop" : undefined);
     msgEl.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "Queued for campus gateway.")}</div>`;
     return;
   }
@@ -327,7 +328,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0) {
     const playRes = await fetch(`${data.gatewayUrl}/play`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actionId, token: data.token }),
+      body: JSON.stringify({ actionId, token: data.token, loop }),
       signal: ctrl.signal,
     });
     clearTimeout(timer);
@@ -336,10 +337,49 @@ async function playAction(actionId, msgEl, delayMinutes = 0) {
       msgEl.innerHTML = `<div class="error-banner">${escapeHtml(playData.error || `Gateway error (${playRes.status})`)}</div>`;
       return;
     }
-    await logAudit(actionId, "lan", "done");
-    msgEl.innerHTML = `<div class="success-banner">Sent to speakers.</div>`;
+    await logAudit(actionId, "lan", "done", loop ? "loop" : undefined);
+    msgEl.innerHTML = `<div class="success-banner">${loop ? "Playing on speakers (looping)." : "Sent to speakers."}</div>`;
   } catch {
     msgEl.innerHTML = `<div class="error-banner">Cannot reach the alarm gateway. Join the church Wi‑Fi network and try again — or ask an admin for remote play access.</div>`;
+  }
+}
+
+async function stopPlayback(msgEl) {
+  if (msgEl) msgEl.innerHTML = "";
+  if (canRemotePlay()) {
+    const { res, data } = await api("/api/stop-remote", { method: "POST", body: "{}" });
+    if (!res.ok) {
+      if (msgEl) msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Remote stop failed.")}</div>`;
+      return;
+    }
+    await logAudit("__stop__", "remote", "done", "stop");
+    if (msgEl) msgEl.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "Stop queued.")}</div>`;
+    return;
+  }
+
+  const { res, data } = await api("/api/play-token", {
+    method: "POST",
+    body: JSON.stringify({ actionId: "evacuate.code_green" }),
+  });
+  if (!res.ok || !data.token || !data.gatewayUrl) {
+    if (msgEl) msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not authorize stop.")}</div>`;
+    return;
+  }
+  try {
+    const stopRes = await fetch(`${data.gatewayUrl}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: data.token }),
+    });
+    const stopData = await stopRes.json().catch(() => ({}));
+    if (!stopRes.ok) {
+      if (msgEl) msgEl.innerHTML = `<div class="error-banner">${escapeHtml(stopData.error || "Stop failed.")}</div>`;
+      return;
+    }
+    await logAudit("__stop__", "lan", "done", "stop");
+    if (msgEl) msgEl.innerHTML = `<div class="success-banner">Speakers stopped.</div>`;
+  } catch {
+    if (msgEl) msgEl.innerHTML = `<div class="error-banner">Cannot reach the alarm gateway.</div>`;
   }
 }
 
@@ -439,10 +479,15 @@ function renderEvacuate() {
         <div>
           <h1 class="page-title">Emergency codes</h1>
           <p class="muted" style="margin:0">
-            ${playHint()} Confirm before sending Red or Blue.
-            Until Protect webhooks are linked, these play the campus test tone.
+            ${playHint()} Confirm before sending Red or Blue. Use <strong>Stop speakers</strong> to cut audio mid-play.
           </p>
         </div>
+        <label class="checks" style="margin:0">
+          <input type="checkbox" id="evac-loop" /> Loop until stopped (lockdown / evacuate)
+        </label>
+        <button type="button" class="btn btn-ghost btn-block" id="evac-stop" style="border-color: color-mix(in oklab, var(--accent) 35%, var(--line))">
+          Stop speakers
+        </button>
         ${actions
           .map((a) => {
             const isGreen = a.id.includes("green");
@@ -470,13 +515,18 @@ function renderEvacuate() {
         </div>`;
       $("[data-confirm-evac]")?.addEventListener("click", (e) => {
         const actionId = e.currentTarget.dataset.confirmEvac;
+        const loop = $("#evac-loop")?.checked;
         $("#evac-confirm").innerHTML = "";
-        void playAction(actionId, $("#play-msg"));
+        void playAction(actionId, $("#play-msg"), 0, loop);
       });
       $("[data-cancel-evac]")?.addEventListener("click", () => {
         $("#evac-confirm").innerHTML = "";
       });
     });
+  });
+
+  $("#evac-stop")?.addEventListener("click", () => {
+    void stopPlayback($("#play-msg"));
   });
 }
 
@@ -585,7 +635,10 @@ document.addEventListener("click", (e) => {
       setRoute("pin");
     });
   }
-  if (t.dataset.play) void playAction(t.dataset.play, $("#play-msg"));
+  if (t.dataset.play) {
+    const loop = state.route === "evacuate" && $("#evac-loop")?.checked;
+    void playAction(t.dataset.play, $("#play-msg"), 0, loop);
+  }
   if (t.dataset.schedule) {
     void scheduleAction(
       t.dataset.schedule,

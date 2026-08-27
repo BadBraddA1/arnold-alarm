@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { jwtVerify } from "jose";
 import { z } from "zod";
 import { triggerAction, type ActionMap } from "./protect.js";
+import { getPlaybackState, stopTalkback } from "./talkback.js";
 
 const PORT = Number(process.env.PORT || 8787);
 const PLAY_JWT_SECRET = process.env.PLAY_JWT_SECRET || "";
@@ -63,12 +64,16 @@ async function verifyPlayToken(token: string, actionId: string) {
   return payload;
 }
 
-async function runAction(actionId: string) {
+async function runAction(actionId: string, options: { loop?: boolean } = {}) {
+  if (actionId === "__stop__") {
+    stopTalkback();
+    return;
+  }
   const def = actions[actionId];
   if (!def) {
     throw Object.assign(new Error(`Unknown action: ${actionId}`), { status: 404 });
   }
-  await triggerAction(def);
+  await triggerAction(def, { loop: options.loop, actionId });
 }
 
 function listScheduled() {
@@ -130,16 +135,30 @@ async function pollCloudOnce() {
     return;
   }
   const data = (await res.json()) as {
-    jobs?: Array<{ id: string; actionId: string; delayMinutes: number; label: string }>;
+    jobs?: Array<{
+      id: string;
+      actionId: string;
+      delayMinutes: number;
+      label: string;
+      loop?: boolean;
+      command?: string;
+    }>;
   };
   for (const job of data.jobs || []) {
-    console.log(`[poll] job ${job.id} ${job.actionId} delay=${job.delayMinutes} from ${job.label}`);
+    console.log(
+      `[poll] job ${job.id} ${job.command || "play"} ${job.actionId} delay=${job.delayMinutes} from ${job.label}`,
+    );
     try {
+      if (job.command === "stop") {
+        stopTalkback();
+        await ackCloud(job.id, true);
+        continue;
+      }
       if (job.delayMinutes > 0) {
         scheduleJob(job.actionId, job.delayMinutes * 60_000);
         await ackCloud(job.id, true);
       } else {
-        await runAction(job.actionId);
+        await runAction(job.actionId, { loop: job.loop });
         await ackCloud(job.id, true);
       }
     } catch (err) {
@@ -152,6 +171,11 @@ async function pollCloudOnce() {
 
 const playSchema = z.object({
   actionId: z.string().min(1),
+  token: z.string().min(1),
+  loop: z.boolean().optional(),
+});
+
+const stopSchema = z.object({
   token: z.string().min(1),
 });
 
@@ -170,14 +194,21 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
   }
 
   if (req.method === "GET" && url.pathname === "/health") {
+    const playback = getPlaybackState();
     sendJson(res, 200, {
       ok: true,
       service: "arnold-alarm-gateway",
       actions: Object.keys(actions),
       scheduled: listScheduled().length,
       poll: Boolean(POLL_SECRET),
+      playback,
       now: Date.now(),
     });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/playback") {
+    sendJson(res, 200, getPlaybackState());
     return;
   }
 
@@ -198,8 +229,8 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
       const raw = await readBody(req);
       const body = playSchema.parse(JSON.parse(raw || "{}"));
       await verifyPlayToken(body.token, body.actionId);
-      await runAction(body.actionId);
-      sendJson(res, 200, { ok: true });
+      await runAction(body.actionId, { loop: body.loop });
+      sendJson(res, 200, { ok: true, playback: getPlaybackState() });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Play failed";
       const status =
@@ -209,6 +240,27 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
             ? 401
             : 500;
       console.error("[play]", message);
+      sendJson(res, status, { error: message });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/stop") {
+    try {
+      const raw = await readBody(req);
+      const body = stopSchema.parse(JSON.parse(raw || "{}"));
+      const { payload } = await jwtVerify(
+        body.token,
+        new TextEncoder().encode(PLAY_JWT_SECRET),
+      );
+      if (payload.typ !== "play") throw new Error("Invalid token type");
+      stopTalkback();
+      sendJson(res, 200, { ok: true, playback: getPlaybackState() });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Stop failed";
+      const status =
+        message.includes("token") || message.includes("Invalid") ? 401 : 500;
+      console.error("[stop]", message);
       sendJson(res, status, { error: message });
     }
     return;

@@ -102,6 +102,8 @@ export type QueueJob = {
   delay_minutes: number;
   status: string;
   created_at: string;
+  loop_play?: number;
+  command?: string;
 };
 
 export async function enqueuePlay(
@@ -112,11 +114,13 @@ export async function enqueuePlay(
     pinId: string;
     label: string;
     delayMinutes: number;
+    loop?: boolean;
+    command?: "play" | "stop";
   },
 ) {
   await env.DB.prepare(
-    `INSERT INTO play_queue (id, action_id, pin_id, label, delay_minutes, status)
-     VALUES (?, ?, ?, ?, ?, 'pending')`,
+    `INSERT INTO play_queue (id, action_id, pin_id, label, delay_minutes, status, loop_play, command)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
   )
     .bind(
       input.id,
@@ -124,13 +128,15 @@ export async function enqueuePlay(
       input.pinId,
       input.label,
       input.delayMinutes,
+      input.loop ? 1 : 0,
+      input.command ?? "play",
     )
     .run();
 }
 
 export async function claimPendingJobs(env: Env, limit = 5): Promise<QueueJob[]> {
   const { results } = await env.DB.prepare(
-    `SELECT id, action_id, pin_id, label, delay_minutes, status, created_at
+    `SELECT id, action_id, pin_id, label, delay_minutes, status, created_at, loop_play, command
      FROM play_queue
      WHERE status = 'pending'
      ORDER BY created_at ASC

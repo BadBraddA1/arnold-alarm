@@ -182,6 +182,7 @@ app.post("/api/play-remote", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {
     actionId?: string;
     delayMinutes?: number;
+    loop?: boolean;
   };
   const actionId = body.actionId?.trim();
   if (!actionId) return c.json({ error: "actionId required" }, 400);
@@ -189,6 +190,7 @@ app.post("/api/play-remote", async (c) => {
     return c.json({ error: "Not allowed for this PIN." }, 403);
   }
   const delayMinutes = Math.max(0, Math.min(120, Number(body.delayMinutes) || 0));
+  const loop = Boolean(body.loop);
 
   const id = crypto.randomUUID();
   await enqueuePlay(c.env, {
@@ -197,6 +199,7 @@ app.post("/api/play-remote", async (c) => {
     pinId: session.pinId,
     label: session.label,
     delayMinutes,
+    loop,
   });
   await insertAudit(c.env, {
     id,
@@ -205,7 +208,12 @@ app.post("/api/play-remote", async (c) => {
     pinId: session.pinId,
     mode: "remote",
     status: delayMinutes > 0 ? "scheduled" : "queued",
-    detail: delayMinutes > 0 ? `delay ${delayMinutes}m` : undefined,
+    detail: [
+      delayMinutes > 0 ? `delay ${delayMinutes}m` : null,
+      loop ? "loop" : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || undefined,
   });
   return c.json({
     ok: true,
@@ -215,6 +223,40 @@ app.post("/api/play-remote", async (c) => {
       delayMinutes > 0
         ? `Queued on campus gateway — will play in ${delayMinutes} min.`
         : "Queued on campus gateway — playing shortly.",
+  });
+});
+
+app.post("/api/stop-remote", async (c) => {
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  if (!hasScope(session.scopes, "remote")) {
+    return c.json({ error: "Remote stop requires remote play access." }, 403);
+  }
+  if (!hasScope(session.scopes, "evacuate") && !hasScope(session.scopes, "admin")) {
+    return c.json({ error: "Not allowed to stop emergency audio." }, 403);
+  }
+
+  const id = crypto.randomUUID();
+  await enqueuePlay(c.env, {
+    id,
+    actionId: "__stop__",
+    pinId: session.pinId,
+    label: session.label,
+    delayMinutes: 0,
+    command: "stop",
+  });
+  await insertAudit(c.env, {
+    id,
+    actionId: "__stop__",
+    label: session.label,
+    pinId: session.pinId,
+    mode: "remote",
+    status: "queued",
+    detail: "stop",
+  });
+  return c.json({
+    ok: true,
+    message: "Stop queued — speakers should go silent within a few seconds.",
   });
 });
 
@@ -228,6 +270,8 @@ app.get("/api/gateway/poll", async (c) => {
       delayMinutes: j.delay_minutes,
       label: j.label,
       createdAt: j.created_at,
+      loop: Boolean(j.loop_play),
+      command: j.command ?? "play",
     })),
   });
 });
