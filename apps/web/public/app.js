@@ -782,7 +782,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
         : actionId === "bells.second"
           ? "Playing now — start bell tone twice (all speakers)."
           : actionId === "bells.first"
-            ? "Playing now — start bell tone (Lobby + Fellowship)."
+            ? "Playing now — start bell tone on all speakers."
             : loop
               ? "Playing now on campus speakers (looping until all clear)."
               : "Playing now on campus speakers.";
