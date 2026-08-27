@@ -128,13 +128,8 @@ export function startTalkRegistration(sipSend: SipSend, contactPort: number): vo
       uri: registrarUri,
       version: "2.0",
       headers: {
-        via: {
-          version: "2.0",
-          protocol: "UDP",
-          host: contactHost,
-          port: contactPort,
-          params: { branch: sip.generateBranch(), rport: undefined },
-        },
+        // sip.js expects via as an array; empty lets transport fill hop
+        via: [],
         "max-forwards": 70,
         from: { uri: aor, params: { tag: fromTag } },
         to: { uri: aor },
@@ -171,22 +166,41 @@ export function startTalkRegistration(sipSend: SipSend, contactPort: number): vo
   };
 
   const registerOnce = (withAuth: boolean) => {
-    const req = buildRequest();
-    if (withAuth) {
-      // caller already populated authCtx via prior 401; sign onto this new CSeq
-      digest.signRequest(authCtx, req, null, credentials);
-    }
-
-    sipSend.send(req, (res) => {
-      if (res.status === 401 || res.status === 407) {
-        digest.signRequest(authCtx, req, res, credentials);
-        const authed = buildRequest();
-        digest.signRequest(authCtx, authed, res, credentials);
-        sipSend.send(authed, onFinal);
-        return;
+    try {
+      const req = buildRequest();
+      if (withAuth) {
+        digest.signRequest(authCtx, req, null, credentials);
       }
-      onFinal(res);
-    });
+
+      sipSend.send(req, (res) => {
+        try {
+          if (res.status === 401 || res.status === 407) {
+            digest.signRequest(authCtx, req, res, credentials);
+            const authed = buildRequest();
+            digest.signRequest(authCtx, authed, res, credentials);
+            sipSend.send(authed, (res2) => {
+              try {
+                onFinal(res2);
+              } catch (err) {
+                lastError = String(err);
+                console.error("[pa/talk] register callback error", err);
+                schedule(20000);
+              }
+            });
+            return;
+          }
+          onFinal(res);
+        } catch (err) {
+          lastError = String(err);
+          console.error("[pa/talk] register callback error", err);
+          schedule(20000);
+        }
+      });
+    } catch (err) {
+      lastError = String(err);
+      console.error("[pa/talk] register send error", err);
+      schedule(20000);
+    }
   };
 
   console.log(`[pa/talk] registering as ${user} @ ${host}:${targetPort}…`);
