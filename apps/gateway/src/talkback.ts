@@ -319,13 +319,16 @@ async function runTalkbackSession(input: {
   }
 }
 
+/** Live PA: shorter arm than file playback — mic PCM buffers during this window. */
+const LIVE_ARM_MS = 250;
+
 async function streamLiveAdts(
   pcmReadable: NodeJS.ReadableStream,
   sockets: WebSocket[],
   signal: AbortSignal,
   pcmSampleRate: number,
 ): Promise<void> {
-  await sleep(ARM_MS);
+  await sleep(LIVE_ARM_MS);
   const argv = [
     "-hide_banner",
     "-loglevel",
@@ -621,8 +624,9 @@ export async function startLiveTalkback(input: {
       }
     });
 
+  // Return as soon as Protect sockets are open so PA can beep immediately.
+  // Speaker-side ARM still happens inside streamLiveAdts before AAC frames.
   await Promise.race([readyP, sleep(12_000)]);
-  await sleep(ARM_MS + 50);
 
   if (input.awaitDone) {
     await playbackPromise;

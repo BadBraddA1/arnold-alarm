@@ -692,12 +692,15 @@ async function handlePaLive(
     `[pa] live talkback starting (ext ${extension}) → ${speakerIds.length} speakers`,
   );
 
-  try {
-    const { setAllSpeakerVolumes, getVolumeProfile } = await import("./protect.js");
-    await setAllSpeakerVolumes(getVolumeProfile().evac);
-  } catch (err) {
-    console.warn("[pa] volume set failed", err);
-  }
+  // Volume in parallel with talkback arm — don't block the earpiece beep.
+  const volumeReady = (async () => {
+    try {
+      const { setAllSpeakerVolumes, getVolumeProfile } = await import("./protect.js");
+      await setAllSpeakerVolumes(getVolumeProfile().evac);
+    } catch (err) {
+      console.warn("[pa] volume set failed", err);
+    }
+  })();
 
   // Capture SIP mic + inject silence so ffmpeg/talkback stay alive across VAD gaps.
   const pcm = new PassThrough({ highWaterMark: 256 * 1024 });
@@ -784,7 +787,7 @@ async function handlePaLive(
   }, 4000);
 
   try {
-    // Returns after sockets+ARM are ready; stream keeps running until hangup.
+    // Returns once Protect sockets open (no extra arm wait) — beep ASAP.
     await startLiveTalkback({
       actionId: "pa.live",
       speakerIds,
@@ -796,10 +799,10 @@ async function handlePaLive(
 
     try {
       const sr = 8000;
-      const n = Math.floor(sr * 0.18);
+      const n = Math.floor(sr * 0.12);
       const beep = Buffer.alloc(n * 2);
       for (let i = 0; i < n; i++) {
-        const v = Math.sin((2 * Math.PI * 880 * i) / sr) * 0.4 * 32767;
+        const v = Math.sin((2 * Math.PI * 880 * i) / sr) * 0.45 * 32767;
         beep.writeInt16LE(Math.max(-32767, Math.min(32767, Math.round(v))), i * 2);
       }
       await playToPhone(dialog, beep);
@@ -807,6 +810,7 @@ async function handlePaLive(
       /* ignore */
     }
 
+    void volumeReady;
     await waitForTalkbackIdle();
   } catch (err) {
     console.error("[pa] live talkback failed", err);
