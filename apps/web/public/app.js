@@ -1217,9 +1217,80 @@ function wireHoldConfirm(btn, onConfirm) {
 /** Local phone alarm during the 10s Red/Blue arming countdown (not campus speakers). */
 let localAlarmCtx = null;
 let localAlarmNodes = [];
+let localAlarmAudio = null;
 let evacCountdownTimer = null;
 
+function promoteMediaPlaybackSession() {
+  // iOS: Web Audio defaults to ambient (muted by silent switch). "playback" uses media volume.
+  try {
+    const session = navigator.audioSession;
+    if (session && typeof session.type === "string") {
+      session.type = "playback";
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/** ~1s looping WAV (HTMLAudioElement) — plays even when iPhone silent switch is on. */
+function makeAlarmWavDataUrl(tone = "red") {
+  const sampleRate = 22050;
+  const seconds = 1;
+  const n = sampleRate * seconds;
+  const hi = tone === "blue" ? 880 : 980;
+  const lo = tone === "blue" ? 620 : 720;
+  const samples = new Int16Array(n);
+  for (let i = 0; i < n; i++) {
+    const t = i / sampleRate;
+    const beepOn = t % 0.25 < 0.18;
+    if (!beepOn) {
+      samples[i] = 0;
+      continue;
+    }
+    const freq = Math.floor(t / 0.25) % 2 === 0 ? hi : lo;
+    const env = Math.min(1, (t % 0.25) / 0.02) * Math.min(1, (0.18 - (t % 0.25)) / 0.04);
+    const v = Math.sin(2 * Math.PI * freq * t) * env * 0.85;
+    samples[i] = Math.max(-32767, Math.min(32767, (v * 32767) | 0));
+  }
+  const dataSize = samples.length * 2;
+  const buf = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buf);
+  const writeStr = (offset, s) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, dataSize, true);
+  for (let i = 0; i < samples.length; i++) {
+    view.setInt16(44 + i * 2, samples[i], true);
+  }
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return `data:audio/wav;base64,${btoa(binary)}`;
+}
+
 function stopLocalPhoneAlarm() {
+  if (localAlarmAudio) {
+    try {
+      localAlarmAudio.pause();
+      localAlarmAudio.removeAttribute("src");
+      localAlarmAudio.load?.();
+    } catch {
+      /* ignore */
+    }
+    localAlarmAudio = null;
+  }
   for (const n of localAlarmNodes) {
     try {
       n.stop?.();
@@ -1243,20 +1314,19 @@ function stopLocalPhoneAlarm() {
   }
 }
 
-function startLocalPhoneAlarm(tone = "red") {
-  stopLocalPhoneAlarm();
+function startWebAudioAlarmFallback(tone = "red") {
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return;
   const ctx = new AC();
   localAlarmCtx = ctx;
+  void ctx.resume?.();
   const master = ctx.createGain();
-  master.gain.value = 0.22;
+  master.gain.value = 0.28;
   master.connect(ctx.destination);
 
   const hi = tone === "blue" ? 880 : 980;
   const lo = tone === "blue" ? 620 : 720;
   let t = ctx.currentTime;
-  // ~10s of alternating beeps on this device only
   for (let i = 0; i < 40; i++) {
     const osc = ctx.createOscillator();
     const g = ctx.createGain();
@@ -1272,8 +1342,32 @@ function startLocalPhoneAlarm(tone = "red") {
     localAlarmNodes.push(osc);
     t += 0.25;
   }
+}
+
+function startLocalPhoneAlarm(tone = "red") {
+  stopLocalPhoneAlarm();
+  promoteMediaPlaybackSession();
+
+  // Prefer <audio> (media volume / silent-switch safe on iOS). Must start in the tap gesture.
   try {
-    navigator.vibrate?.([200, 100, 200, 100, 200]);
+    const audio = new Audio(makeAlarmWavDataUrl(tone));
+    audio.loop = true;
+    audio.playsInline = true;
+    audio.setAttribute("playsinline", "true");
+    audio.volume = 1;
+    localAlarmAudio = audio;
+    const playResult = audio.play();
+    if (playResult && typeof playResult.catch === "function") {
+      playResult.catch(() => {
+        startWebAudioAlarmFallback(tone);
+      });
+    }
+  } catch {
+    startWebAudioAlarmFallback(tone);
+  }
+
+  try {
+    navigator.vibrate?.([220, 80, 220, 80, 220, 80, 220]);
   } catch {
     /* ignore */
   }
