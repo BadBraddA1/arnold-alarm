@@ -16,8 +16,9 @@ Phone → alarm-gw.local:8787/play   (LAN / church Wi‑Fi only)
 Pi    → UniFi Protect NVR → AI speakers
 ```
 
-- Site works on cellular; **Play** fails off campus until you’re on church Wi‑Fi (Pi unreachable).
+- Site works on cellular. **Play** needs either church Wi‑Fi (direct to Pi) or a PIN with **remote** scope (Worker queue → Pi poll).
 - PINs live in **Cloudflare D1** (hashed). Sessions + play tokens are JWTs.
+- Recent activity on home shows who played what (Central time); stacked cards on mobile.
 
 ## Repo
 
@@ -70,7 +71,7 @@ Known AI speakers (Integration API):
 | Lobby | `6a3b3da90010b103e4341d80` |
 | Fellowship hall | `6a3b06950026b103e4329ce6` |
 
-`bells.test` currently fires Protect **test-sound** on all four (not the Alarm Manager “TEST ACOC” clip). To wire a real Alarm Manager automation, set:
+Until Alarm Manager webhooks are linked, **all** UI actions (`bells.*`, `evacuate.code_*`) map to Protect **test-sound** on those speakers so buttons do not fail with `Unknown action`. Replace each with a real clip:
 
 ```json
 { "kind": "alarmWebhook", "id": "<webhook-uuid-from-Protect>" }
@@ -79,8 +80,10 @@ Known AI speakers (Integration API):
 ## Protect (still required for custom clips / talkback)
 
 1. Alarm Manager automations (play audio / text on speaker).
-2. Webhook or automation IDs → gateway `ACTIONS`.
+2. Webhook or automation IDs → gateway `ACTIONS` on the Pi (`~/.config/arnold-alarm/gateway.env`), then `sudo systemctl restart arnold-alarm-gateway`.
 3. Same `PLAY_JWT_SECRET` as the Worker.
+
+Remote play also needs Worker secret `GATEWAY_POLL_SECRET` matching the Pi, and the PIN’s **remote** scope checked in PIN admin.
 
 ## Class bells UI
 
