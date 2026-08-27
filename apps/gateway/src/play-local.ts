@@ -27,6 +27,25 @@ export async function playLocalAction(actionId: string): Promise<void> {
     });
     return;
   }
+  if (actionId.startsWith("test.speaker:")) {
+    const speakerId = actionId.slice("test.speaker:".length).trim();
+    if (!/^[a-f0-9]{16,32}$/i.test(speakerId)) {
+      throw new Error("Invalid speaker id");
+    }
+    const file =
+      (process.env.TEST_ONE_FILE || "Test_Start_Tone.mp3").trim() ||
+      "Test_Start_Tone.mp3";
+    const { startTalkback } = await import("./talkback.js");
+    await withActionVolume("test.speakers", () =>
+      startTalkback({
+        actionId,
+        file,
+        speakerIds: [speakerId],
+        awaitDone: true,
+      }),
+    );
+    return;
+  }
   const def = actions[actionId];
   if (!def) throw new Error(`Unknown action: ${actionId}`);
   const loop =

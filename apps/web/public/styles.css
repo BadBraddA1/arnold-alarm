@@ -585,6 +585,18 @@ button, input { font: inherit; }
   min-width: 0;
 }
 .speaker-name { font-weight: 600; }
+.speaker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.speaker-test-btn {
+  min-height: 2rem;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
 .speaker-meta { font-size: 0.8rem; }
 .speaker-bell-vol {
   display: flex;

@@ -640,6 +640,7 @@ function actionLabel(actionId) {
   if (actionId === "__all_clear__") return "Stop & All clear (Code Green ×2)";
   if (actionId === "__stop__") return "Stop speakers";
   if (actionId === "test.speakers") return "TEST ACOC — speaker check";
+  if (actionId.startsWith("test.speaker:")) return "Speaker tone test";
   if (actionId === "bells.first") return "First bell";
   if (actionId === "bells.second") return "Second bell";
   if (actionId === "bells.test") return "TEST ACOC";
@@ -755,6 +756,8 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
       () => ctrl.abort(),
       actionId === "test.speakers"
         ? 45000
+        : actionId.startsWith("test.speaker:")
+          ? 20000
         : actionId === "bells.second"
           ? 30000
           : actionId === "bells.first"
@@ -779,6 +782,8 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
     const playingMsg =
       actionId === "test.speakers" || actionId === "bells.test"
         ? "Notifying desk phones, then start tone + TEST ACOC on all speakers."
+        : actionId.startsWith("test.speaker:")
+          ? "Playing start tone on that speaker only."
         : actionId === "bells.second"
           ? "Playing now — start bell tone twice (all speakers)."
           : actionId === "bells.first"
@@ -1559,12 +1564,16 @@ function speakerStatusHtml(data) {
       return `<li class="speaker-row">
         <span class="speaker-dot ${ok ? "speaker-dot--ok" : "speaker-dot--bad"}" title="${escapeHtml(s.state || "")}"></span>
         <div class="speaker-main">
-          <span class="speaker-name">${escapeHtml(s.name)}</span>
+          <div class="speaker-head">
+            <span class="speaker-name">${escapeHtml(s.name)}</span>
+            <button type="button" class="btn btn-ghost speaker-test-btn" data-test-speaker="${escapeHtml(s.id)}" data-test-name="${escapeHtml(s.name)}" ${ok ? "" : "disabled"}>Test tone</button>
+          </div>
           <span class="muted speaker-meta">${escapeHtml(String(s.state || "UNKNOWN"))} · now ${Number(s.volume) || 0}% · ${escapeHtml(activity)}</span>
           <label class="speaker-bell-vol">
             <span>Bell <strong class="bell-vol-val">${bellVol}%</strong></span>
             <input type="range" min="20" max="100" step="5" value="${bellVol}" data-bell-speaker="${escapeHtml(s.id)}" />
           </label>
+          <div class="speaker-test-msg muted" data-test-msg="${escapeHtml(s.id)}" style="font-size:0.8rem;min-height:1.1em"></div>
         </div>
       </li>`;
     })
@@ -1587,6 +1596,14 @@ async function refreshAdminSpeakers() {
       input.addEventListener("input", () => {
         const label = input.closest("label")?.querySelector(".bell-vol-val");
         if (label) label.textContent = `${input.value}%`;
+      });
+    });
+    list.querySelectorAll("[data-test-speaker]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.testSpeaker;
+        if (!id) return;
+        const msg = list.querySelector(`[data-test-msg="${CSS.escape(id)}"]`);
+        void playAction(`test.speaker:${id}`, msg || $("#admin-test-msg"));
       });
     });
   }

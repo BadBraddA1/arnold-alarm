@@ -106,6 +106,26 @@ async function runAction(
     stopTalkback();
     return;
   }
+  // Admin: fire start tone on one Protect speaker (actionId = test.speaker:<id>)
+  if (actionId.startsWith("test.speaker:")) {
+    const speakerId = actionId.slice("test.speaker:".length).trim();
+    if (!/^[a-f0-9]{16,32}$/i.test(speakerId)) {
+      throw Object.assign(new Error("Invalid speaker id"), { status: 400 });
+    }
+    const file =
+      (process.env.TEST_ONE_FILE || "Test_Start_Tone.mp3").trim() ||
+      "Test_Start_Tone.mp3";
+    const { startTalkback } = await import("./talkback.js");
+    await withActionVolume("test.speakers", () =>
+      startTalkback({
+        actionId,
+        file,
+        speakerIds: [speakerId],
+        awaitDone: true,
+      }),
+    );
+    return;
+  }
   const def = actions[actionId];
   if (!def) {
     throw Object.assign(new Error(`Unknown action: ${actionId}`), { status: 404 });
