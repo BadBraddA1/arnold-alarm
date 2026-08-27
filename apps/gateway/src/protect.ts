@@ -1,13 +1,17 @@
 /**
- * UniFi Protect Alarm Manager triggers.
+ * UniFi Protect triggers against an on-site NVR (e.g. UNVR Pro).
  *
  * Supports:
- * - webhook: POST to a Protect automation webhook URL (LAN)
- * - automation: login + POST Integration-style run (best-effort private API)
+ * - webhook: POST to a full Protect Alarm Manager webhook URL
+ * - alarmWebhook: POST Integration alarm-manager/webhook/{id}
+ * - testSound: POST Integration speakers/{id}/test-sound (Protect built-in test tone)
+ * - automation: login + private API run (best-effort)
  */
 
 export type ActionDef =
   | { kind: "webhook"; url: string }
+  | { kind: "alarmWebhook"; id: string }
+  | { kind: "testSound"; speakerIds: string[] }
   | { kind: "automation"; id: string };
 
 export type ActionMap = Record<string, ActionDef>;
@@ -213,9 +217,64 @@ async function triggerAutomation(id: string) {
   }
 }
 
+async function triggerAlarmWebhook(id: string) {
+  const apiKey = process.env.PROTECT_API_KEY;
+  if (!apiKey) throw new Error("PROTECT_API_KEY required for alarm webhooks");
+  const url = `${protectBase()}/proxy/protect/integration/v1/alarm-manager/webhook/${encodeURIComponent(id)}`;
+  const result = await insecureFetch(url, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-API-KEY": apiKey,
+    },
+    body: "{}",
+  });
+  if (result.status >= 400) {
+    throw new Error(
+      `Alarm webhook failed (${result.status}): ${result.text.slice(0, 200)}`,
+    );
+  }
+}
+
+async function triggerTestSound(speakerIds: string[]) {
+  const apiKey = process.env.PROTECT_API_KEY;
+  if (!apiKey) throw new Error("PROTECT_API_KEY required for test-sound");
+  if (!speakerIds.length) throw new Error("No speakerIds configured");
+
+  const errors: string[] = [];
+  for (const id of speakerIds) {
+    const url = `${protectBase()}/proxy/protect/integration/v1/speakers/${encodeURIComponent(id)}/test-sound`;
+    const result = await insecureFetch(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-API-KEY": apiKey,
+      },
+      body: "{}",
+    });
+    // 204 No Content is success
+    if (result.status >= 400) {
+      errors.push(`${id}: ${result.status} ${result.text.slice(0, 120)}`);
+    }
+  }
+  if (errors.length) {
+    throw new Error(`test-sound failed: ${errors.join("; ")}`);
+  }
+}
+
 export async function triggerAction(def: ActionDef) {
   if (def.kind === "webhook") {
     await triggerWebhook(def.url);
+    return;
+  }
+  if (def.kind === "alarmWebhook") {
+    await triggerAlarmWebhook(def.id);
+    return;
+  }
+  if (def.kind === "testSound") {
+    await triggerTestSound(def.speakerIds);
     return;
   }
   await triggerAutomation(def.id);

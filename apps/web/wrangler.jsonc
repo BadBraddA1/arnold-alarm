@@ -26,8 +26,8 @@
     }
   ],
   "vars": {
-    "GATEWAY_URL": "http://alarm-gw.local:8787",
-    "BELL_ACTIONS": "bells.period_start:Period start,bells.period_end:Period end,bells.chapel:Chapel",
+    "GATEWAY_URL": "http://192.168.1.204:8787",
+    "BELL_ACTIONS": "bells.test:TEST ACOC (test tone),bells.period_start:Period start,bells.period_end:Period end,bells.chapel:Chapel",
     "EVACUATE_ACTION": "evacuate.main:Building evacuation"
   }
 }
