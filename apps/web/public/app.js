@@ -40,22 +40,39 @@ function escapeHtml(s) {
     .replaceAll('"', "&quot;");
 }
 
+function canRemotePlay() {
+  return !!state.session?.scopes?.includes("remote");
+}
+
+function statusCopy() {
+  if (canRemotePlay()) {
+    return ["ok", "Ready — plays through campus (works off Wi‑Fi)"];
+  }
+  if (state.gatewayStatus === "online") {
+    return ["ok", "Ready — on church network"];
+  }
+  if (state.gatewayStatus === "checking") {
+    return ["warn", "Checking campus connection…"];
+  }
+  return ["bad", "Not on church Wi‑Fi — play unavailable"];
+}
+
+function playHint() {
+  if (canRemotePlay()) {
+    return "Commands go to campus automatically — no church Wi‑Fi needed.";
+  }
+  return "You must be on church Wi‑Fi to play.";
+}
+
 function header(label) {
-  const canRemote = state.session?.scopes?.includes("remote");
-  const status = canRemote
-    ? ["ok", "Remote play enabled (works off campus)"]
-    : state.gatewayStatus === "online"
-      ? ["ok", "Gateway online (church Wi‑Fi)"]
-      : state.gatewayStatus === "checking"
-        ? ["warn", "Checking gateway…"]
-        : ["bad", "Gateway unreachable — join church Wi‑Fi to play"];
+  const [dot, text] = statusCopy();
   return `
     <header class="app-header">
       <div>
         <div class="brand">Arnold <span>Alarm</span></div>
         ${label ? `<div class="muted">${escapeHtml(label)}</div>` : ""}
         <div class="status-row" style="margin-top:0.4rem">
-          <span class="dot ${status[0]}"></span><span>${status[1]}</span>
+          <span class="dot ${dot}"></span><span>${text}</span>
         </div>
       </div>
       <button type="button" class="btn btn-ghost" data-action="logout">Sign out</button>
@@ -256,7 +273,7 @@ function formatCentral(iso) {
 
 async function playAction(actionId, msgEl, delayMinutes = 0) {
   msgEl.innerHTML = "";
-  const canRemote = state.session?.scopes?.includes("remote");
+  const canRemote = canRemotePlay();
 
   if (canRemote) {
     const { res, data } = await api("/api/play-remote", {
@@ -389,7 +406,7 @@ function renderBells() {
         ${clockHtml()}
         <div>
           <h1 class="page-title">Class bells</h1>
-          <p class="muted" style="margin:0">Must be on church Wi‑Fi. Schedule survives closing this page.</p>
+          <p class="muted" style="margin:0">${playHint()} Schedule survives closing this page.</p>
         </div>
         ${
           def
@@ -417,7 +434,6 @@ function renderEvacuate() {
     { id: "evacuate.code_blue", label: "Code Blue — Lockdown" },
     { id: "evacuate.code_green", label: "Code Green — All clear" },
   ];
-  const canRemote = state.session?.scopes?.includes("remote");
   app.innerHTML = `
     <main class="app-shell">
       ${header(state.session.label)}
@@ -426,8 +442,7 @@ function renderEvacuate() {
         <div>
           <h1 class="page-title">Emergency codes</h1>
           <p class="muted" style="margin:0">
-            ${canRemote ? "Remote play enabled." : "Join church Wi‑Fi to play (unless you have remote access)."}
-            Confirm before sending Red or Blue.
+            ${playHint()} Confirm before sending Red or Blue.
           </p>
         </div>
         ${actions
@@ -585,6 +600,19 @@ document.addEventListener("click", (e) => {
 });
 
 async function checkGateway() {
+  // Remote users never need LAN gateway reachability — don't flip the status to "not on Wi‑Fi".
+  if (canRemotePlay()) {
+    const row = $(".status-row");
+    if (row) {
+      const [dot, text] = statusCopy();
+      const dotEl = row.querySelector(".dot");
+      const span = row.querySelector("span:last-child");
+      if (dotEl) dotEl.className = `dot ${dot}`;
+      if (span) span.textContent = text;
+    }
+    return;
+  }
+
   if (!state.config?.gatewayUrl) return;
   try {
     const ctrl = new AbortController();
@@ -600,16 +628,11 @@ async function checkGateway() {
   }
   const row = $(".status-row");
   if (row && state.session) {
-    // light refresh of status text without full re-render
-    const dot = row.querySelector(".dot");
+    const [dot, text] = statusCopy();
+    const dotEl = row.querySelector(".dot");
     const span = row.querySelector("span:last-child");
-    if (dot && span) {
-      dot.className = `dot ${state.gatewayStatus === "online" ? "ok" : "bad"}`;
-      span.textContent =
-        state.gatewayStatus === "online"
-          ? "Gateway online (church Wi‑Fi)"
-          : "Gateway unreachable — join church Wi‑Fi to play";
-    }
+    if (dotEl) dotEl.className = `dot ${dot}`;
+    if (span) span.textContent = text;
   }
 }
 
