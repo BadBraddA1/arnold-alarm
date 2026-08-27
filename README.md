@@ -156,9 +156,12 @@ curl -s http://127.0.0.1:8787/health | jq .pa
 
 1. Talk → Settings → **Third-Party SIP Provider** → Custom → Pi LAN IP, UDP **5060**, **Register = No**.
 2. Prefer **Add Third-Party Device** (extension) over short codes on a trunk — Talk dials extensions more reliably than trunk DIDs.
-3. Softphone / trunk: **9099** (earpiece test), **9090** (live PA). Talk extension **0022** (when registered) plays a menu: **1** = page, **2** = phone-only test.
+3. Softphone / trunk: **9099** (earpiece test), **9090** (live PA). Talk extension **0022** (when registered) plays a menu:
+   - **1** = page building
+   - **2** = phone-only test
+   - **3** = enter PIN → choose Code Red / Blue / All clear → `#` to confirm (plays on campus when armed; logged when unarmed)
 
-Env (`~/.config/arnold-alarm/gateway.env`): `PA_ENABLED=1`, `PA_EXT=9090`, `PA_TEST_EXT=9099`, `PA_SPEAKER_IDS=…`, and for Talk: `PA_TALK_HOST`, `PA_TALK_USER`, `PA_TALK_PASS`, `PA_TALK_MODE=menu`.
+Env (`~/.config/arnold-alarm/gateway.env`): `PA_ENABLED=1`, `PA_EXT=9090`, `PA_TEST_EXT=9099`, `PA_SPEAKER_IDS=…`, `GATEWAY_POLL_SECRET`, and for Talk: `PA_TALK_HOST`, `PA_TALK_USER`, `PA_TALK_PASS`, `PA_TALK_MODE=menu`.
 
 ## Protect (optional backup / custom clips)
 

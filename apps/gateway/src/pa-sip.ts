@@ -19,6 +19,7 @@ import {
   startTalkRegistration,
   stopTalkRegistration,
 } from "./talk-register.js";
+import { playLocalAction } from "./play-local.js";
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -218,6 +219,167 @@ function loadGoodbyePcm(): Buffer {
   return loadAssetPcm("pa-sip-goodbye.pcm");
 }
 
+function ivrApiUrl(): string {
+  return (
+    process.env.CLOUD_IVR_URL ||
+    (process.env.CLOUD_POLL_URL || "https://alarm.arnoldcoc.org/api/gateway/poll").replace(
+      /\/api\/gateway\/poll\/?$/,
+      "/api/gateway/ivr-alarm",
+    )
+  );
+}
+
+async function authorizeIvrAlarm(
+  pin: string,
+  actionId: string,
+): Promise<{
+  ok: boolean;
+  armed?: boolean;
+  held?: boolean;
+  error?: string;
+  status?: number;
+}> {
+  const secret = process.env.GATEWAY_POLL_SECRET || "";
+  if (!secret) {
+    return { ok: false, error: "no_gateway_secret", status: 500 };
+  }
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12_000);
+    const res = await fetch(ivrApiUrl(), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ pin, actionId }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      armed?: boolean;
+      held?: boolean;
+      error?: string;
+    };
+    if (!res.ok) {
+      return { ok: false, error: data.error || `http_${res.status}`, status: res.status };
+    }
+    return {
+      ok: true,
+      armed: data.armed,
+      held: data.held,
+      error: data.error,
+      status: res.status,
+    };
+  } catch (err) {
+    console.error("[pa] ivr-alarm authorize failed", err);
+    return { ok: false, error: "network", status: 502 };
+  }
+}
+
+async function collectPinDigits(
+  dialog: SipDialog,
+  timeoutMs: number,
+): Promise<string | null> {
+  let pin = "";
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const d = await waitForDtmf(dialog, Math.max(500, deadline - Date.now()));
+    if (d === null) return pin.length === 6 ? pin : null;
+    if (d === "*") return null;
+    if (d === "#") return pin.length === 6 ? pin : null;
+    if (/^\d$/.test(d)) {
+      pin += d;
+      if (pin.length >= 6) return pin.slice(0, 6);
+    }
+  }
+  return pin.length === 6 ? pin : null;
+}
+
+async function collectOneOf(
+  dialog: SipDialog,
+  allowed: string[],
+  timeoutMs: number,
+): Promise<string | null> {
+  const set = new Set(allowed);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const d = await waitForDtmf(dialog, Math.max(500, deadline - Date.now()));
+    if (d === null) return null;
+    if (d === "*") return "*";
+    if (set.has(d)) return d;
+  }
+  return null;
+}
+
+async function handleIvrAlarm(dialog: SipDialog): Promise<"done" | "cancel"> {
+  const timeoutMs = Math.max(15_000, Number(process.env.PA_IVR_TIMEOUT_MS || 30_000));
+
+  const pinP = collectPinDigits(dialog, timeoutMs);
+  await playToPhone(dialog, loadAssetPcm("pa-sip-enter-pin.pcm"));
+  const pin = await pinP;
+  if (!pin) {
+    console.log("[pa] IVR alarm — PIN cancelled or incomplete");
+    return "cancel";
+  }
+
+  const alarmP = collectOneOf(dialog, ["1", "2", "3", "*"], timeoutMs);
+  await playToPhone(dialog, loadAssetPcm("pa-sip-choose-alarm.pcm"));
+  const alarmChoice = await alarmP;
+  if (!alarmChoice || alarmChoice === "*") {
+    console.log("[pa] IVR alarm — alarm choice cancelled");
+    return "cancel";
+  }
+
+  const actionId =
+    alarmChoice === "1"
+      ? "evacuate.code_red"
+      : alarmChoice === "2"
+        ? "evacuate.code_blue"
+        : "__all_clear__";
+  const confirmPrompt =
+    alarmChoice === "1"
+      ? "pa-sip-confirm-red.pcm"
+      : alarmChoice === "2"
+        ? "pa-sip-confirm-blue.pcm"
+        : "pa-sip-confirm-clear.pcm";
+
+  const confirmP = collectOneOf(dialog, ["#", "*"], timeoutMs);
+  await playToPhone(dialog, loadAssetPcm(confirmPrompt));
+  const confirm = await confirmP;
+  if (confirm !== "#") {
+    console.log("[pa] IVR alarm — not confirmed");
+    return "cancel";
+  }
+
+  console.log(`[pa] IVR alarm — authorizing ${actionId}`);
+  const auth = await authorizeIvrAlarm(pin, actionId);
+  if (!auth.ok) {
+    if (auth.error === "incorrect_pin") {
+      await playToPhone(dialog, loadAssetPcm("pa-sip-bad-pin.pcm"));
+    } else {
+      await playToPhone(dialog, loadAssetPcm("pa-sip-not-allowed.pcm"));
+    }
+    return "done";
+  }
+
+  if (auth.held || auth.armed === false) {
+    await playToPhone(dialog, loadUnarmedPromptPcm());
+    return "done";
+  }
+
+  try {
+    await playLocalAction(actionId);
+    await playToPhone(dialog, loadAssetPcm("pa-sip-alarm-sent.pcm"));
+    console.log(`[pa] IVR alarm played ${actionId}`);
+  } catch (err) {
+    console.error("[pa] IVR alarm play failed", err);
+    await playToPhone(dialog, loadAssetPcm("pa-sip-not-allowed.pcm"));
+  }
+  return "done";
+}
+
 function waitForDtmf(
   dialog: SipDialog,
   timeoutMs: number,
@@ -401,7 +563,7 @@ async function handleIvrMenu(dialog: SipDialog, speakerIds: string[]): Promise<v
   await dialog.ringing?.();
   await dialog.accept({ payloadType: 0 });
   activeCalls += 1;
-  console.log("[pa] IVR menu — waiting for DTMF (1=page, 2=test)");
+  console.log("[pa] IVR menu — waiting for DTMF (1=page, 2=test, 3=PIN alarm)");
 
   let cleaned = false;
   const cleanup = () => {
@@ -424,7 +586,9 @@ async function handleIvrMenu(dialog: SipDialog, speakerIds: string[]): Promise<v
     const digitP = waitForDtmf(dialog, menuTimeoutMs);
     await playToPhone(dialog, loadMenuPromptPcm());
     choice = await digitP;
-    if (choice === "1" || choice === "2" || choice === "*" || choice === "#") break;
+    if (choice === "1" || choice === "2" || choice === "3" || choice === "*" || choice === "#") {
+      break;
+    }
     if (choice === null) break; // timeout or hangup
     console.log(`[pa] IVR ignored digit "${choice}"`);
   }
@@ -442,6 +606,14 @@ async function handleIvrMenu(dialog: SipDialog, speakerIds: string[]): Promise<v
     console.log("[pa] IVR → phone-only test");
     cleaned = true; // hand off
     await handleSipTest(dialog, { alreadyAccepted: true });
+    return;
+  }
+
+  if (choice === "3") {
+    console.log("[pa] IVR → PIN alarm");
+    await handleIvrAlarm(dialog);
+    await hangUpWithGoodbye(dialog);
+    cleanup();
     return;
   }
 

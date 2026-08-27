@@ -419,6 +419,110 @@ app.post("/api/stop-remote", async (c) => {
   });
 });
 
+const IVR_ALARM_ACTIONS = new Set([
+  "evacuate.code_red",
+  "evacuate.code_blue",
+  "__all_clear__",
+]);
+
+/**
+ * Gateway-only: verify staff PIN from phone IVR and authorize a local alarm play.
+ * Does not enqueue — the Pi plays immediately after a successful response.
+ */
+app.post("/api/gateway/ivr-alarm", async (c) => {
+  if (!gatewayAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
+
+  const body = (await c.req.json().catch(() => ({}))) as {
+    pin?: string;
+    actionId?: string;
+  };
+  const pin = (body.pin ?? "").replace(/\D/g, "");
+  const actionId = (body.actionId ?? "").trim();
+  if (!/^\d{6}$/.test(pin)) {
+    return c.json({ error: "invalid_pin", message: "Enter a 6-digit PIN." }, 400);
+  }
+  if (!IVR_ALARM_ACTIONS.has(actionId)) {
+    return c.json({ error: "invalid_action", message: "Unsupported alarm action." }, 400);
+  }
+
+  const limit = await checkRateLimit(c.env, `ivr:${clientIp(c)}`);
+  if (!limit.allowed) {
+    return c.json(
+      { error: "rate_limited", message: "Too many attempts. Try again later." },
+      429,
+    );
+  }
+
+  const pins = await listActivePins(c.env);
+  let matched: (typeof pins)[0] | null = null;
+  for (const row of pins) {
+    if (await bcrypt.compare(pin, row.pin_hash)) {
+      matched = row;
+      break;
+    }
+  }
+  if (!matched) {
+    return c.json({ error: "incorrect_pin", message: "Incorrect PIN." }, 401);
+  }
+  if (matched.must_change_pin) {
+    return c.json(
+      { error: "must_change_pin", message: "Change your temporary PIN in the app first." },
+      403,
+    );
+  }
+
+  await clearRateLimit(c.env, `ivr:${clientIp(c)}`);
+  const scopes = parseScopesField(matched.scopes);
+  if (!actionAllowed(actionId, scopes)) {
+    return c.json(
+      { error: "not_allowed", message: "Not allowed for this PIN." },
+      403,
+    );
+  }
+
+  const armed = await getSystemArmed(c.env);
+  const id = crypto.randomUUID();
+  if (!armed) {
+    await insertAudit(c.env, {
+      id,
+      actionId,
+      label: matched.label,
+      pinId: matched.id,
+      mode: "ivr",
+      status: "held",
+      detail: "phone IVR · unarmed — not played",
+    });
+    return c.json({
+      ok: true,
+      armed: false,
+      held: true,
+      id,
+      actionId,
+      label: matched.label,
+      message: UNARMED_MSG,
+    });
+  }
+
+  await insertAudit(c.env, {
+    id,
+    actionId,
+    label: matched.label,
+    pinId: matched.id,
+    mode: "ivr",
+    status: "done",
+    detail: "phone IVR — playing on campus",
+  });
+  return c.json({
+    ok: true,
+    armed: true,
+    held: false,
+    id,
+    actionId,
+    label: matched.label,
+    playLocal: true,
+  });
+});
+
 app.get("/api/gateway/status", async (c) => {
   const session = c.get("session");
   if (!session) return c.json({ error: "Unauthorized" }, 401);
