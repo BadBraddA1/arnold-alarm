@@ -187,23 +187,20 @@ async function loadAudit() {
     el.textContent = "No activations yet.";
     return;
   }
-  el.innerHTML = `
-    <table class="table">
-      <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Status</th></tr></thead>
-      <tbody>
-        ${events
-          .slice(0, 40)
-          .map(
-            (e) => `<tr>
-            <td style="white-space:nowrap">${escapeHtml(formatCentral(e.createdAt))}</td>
-            <td>${escapeHtml(e.label)}</td>
-            <td>${escapeHtml(actionLabel(e.actionId))}<div class="muted" style="font-size:0.75rem">${escapeHtml(e.mode)}${e.detail ? " · " + escapeHtml(e.detail) : ""}</div></td>
-            <td>${escapeHtml(e.status)}</td>
-          </tr>`,
-          )
-          .join("")}
-      </tbody>
-    </table>`;
+  el.className = "audit-list";
+  el.innerHTML = events
+    .slice(0, 40)
+    .map((e) => {
+      const ok = e.status === "done" || e.status === "queued" || e.status === "scheduled";
+      const detail = [e.mode, e.detail].filter(Boolean).join(" · ");
+      return `<div class="audit-item">
+        <div class="when">${escapeHtml(formatCentral(e.createdAt))}</div>
+        <p class="who-action">${escapeHtml(e.label)} · ${escapeHtml(actionLabel(e.actionId))}</p>
+        ${detail ? `<div class="meta">${escapeHtml(detail)}</div>` : ""}
+        <span class="status-pill ${ok ? "ok" : "bad"}">${escapeHtml(e.status)}</span>
+      </div>`;
+    })
+    .join("");
 }
 
 function clockHtml() {
@@ -443,6 +440,7 @@ function renderEvacuate() {
           <h1 class="page-title">Emergency codes</h1>
           <p class="muted" style="margin:0">
             ${playHint()} Confirm before sending Red or Blue.
+            Until Protect webhooks are linked, these play the campus test tone.
           </p>
         </div>
         ${actions

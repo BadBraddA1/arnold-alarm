@@ -183,6 +183,49 @@ button, input { font: inherit; }
   text-align: left;
   padding: 0.55rem 0.35rem;
   border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.audit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+.audit-item {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.75rem 0.85rem;
+  background: #0c1015;
+}
+.audit-item .when {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-bottom: 0.25rem;
+}
+.audit-item .who-action {
+  font-weight: 600;
+  margin: 0 0 0.2rem;
+}
+.audit-item .meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.audit-item .status-pill {
+  display: inline-block;
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+.audit-item .status-pill.ok {
+  color: #c7f0d8;
+  border-color: color-mix(in oklab, var(--ok) 45%, var(--line));
+}
+.audit-item .status-pill.bad {
+  color: #ffd4d1;
+  border-color: color-mix(in oklab, var(--danger) 45%, var(--line));
 }
 .field { display: flex; flex-direction: column; gap: 0.35rem; }
 .field input {
