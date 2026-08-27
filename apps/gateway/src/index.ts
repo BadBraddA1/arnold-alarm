@@ -6,6 +6,12 @@ import { triggerAction, type ActionMap } from "./protect.js";
 const PORT = Number(process.env.PORT || 8787);
 const PLAY_JWT_SECRET = process.env.PLAY_JWT_SECRET || "";
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
+const POLL_URL =
+  process.env.CLOUD_POLL_URL || "https://alarm.arnoldcoc.org/api/gateway/poll";
+const ACK_URL =
+  process.env.CLOUD_ACK_URL || "https://alarm.arnoldcoc.org/api/gateway/ack";
+const POLL_SECRET = process.env.GATEWAY_POLL_SECRET || "";
+const POLL_MS = Number(process.env.CLOUD_POLL_MS || 2000);
 
 type ScheduledJob = {
   id: string;
@@ -92,6 +98,58 @@ function scheduleJob(actionId: string, delayMs: number) {
   return { id, actionId, fireAt };
 }
 
+async function ackCloud(id: string, ok: boolean, error?: string) {
+  if (!POLL_SECRET) return;
+  try {
+    await fetch(ACK_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${POLL_SECRET}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ id, ok, error }),
+    });
+  } catch (err) {
+    console.error("[poll] ack failed", err);
+  }
+}
+
+async function pollCloudOnce() {
+  if (!POLL_SECRET) return;
+  let res: Response;
+  try {
+    res = await fetch(POLL_URL, {
+      headers: { Authorization: `Bearer ${POLL_SECRET}` },
+    });
+  } catch (err) {
+    console.error("[poll] fetch failed", err);
+    return;
+  }
+  if (!res.ok) {
+    console.error("[poll] bad status", res.status);
+    return;
+  }
+  const data = (await res.json()) as {
+    jobs?: Array<{ id: string; actionId: string; delayMinutes: number; label: string }>;
+  };
+  for (const job of data.jobs || []) {
+    console.log(`[poll] job ${job.id} ${job.actionId} delay=${job.delayMinutes} from ${job.label}`);
+    try {
+      if (job.delayMinutes > 0) {
+        scheduleJob(job.actionId, job.delayMinutes * 60_000);
+        await ackCloud(job.id, true);
+      } else {
+        await runAction(job.actionId);
+        await ackCloud(job.id, true);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "failed";
+      console.error(`[poll] job failed ${job.id}`, message);
+      await ackCloud(job.id, false, message);
+    }
+  }
+}
+
 const playSchema = z.object({
   actionId: z.string().min(1),
   token: z.string().min(1),
@@ -117,6 +175,7 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
       service: "arnold-alarm-gateway",
       actions: Object.keys(actions),
       scheduled: listScheduled().length,
+      poll: Boolean(POLL_SECRET),
       now: Date.now(),
     });
     return;
@@ -181,6 +240,15 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
 
 if (!PLAY_JWT_SECRET) {
   console.warn("WARNING: PLAY_JWT_SECRET is empty — play tokens will fail");
+}
+if (!POLL_SECRET) {
+  console.warn("WARNING: GATEWAY_POLL_SECRET empty — cloud poll disabled");
+} else {
+  setInterval(() => {
+    void pollCloudOnce();
+  }, POLL_MS);
+  void pollCloudOnce();
+  console.log(`cloud poll every ${POLL_MS}ms → ${POLL_URL}`);
 }
 
 createServer((req, res) => {

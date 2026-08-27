@@ -41,8 +41,10 @@ function escapeHtml(s) {
 }
 
 function header(label) {
-  const status =
-    state.gatewayStatus === "online"
+  const canRemote = state.session?.scopes?.includes("remote");
+  const status = canRemote
+    ? ["ok", "Remote play enabled (works off campus)"]
+    : state.gatewayStatus === "online"
       ? ["ok", "Gateway online (church Wi‑Fi)"]
       : state.gatewayStatus === "checking"
         ? ["warn", "Checking gateway…"]
@@ -179,8 +181,51 @@ function tickClock() {
   if (d) d.textContent = `${date} · Central`;
 }
 
-async function playAction(actionId, msgEl) {
+async function playAction(actionId, msgEl, delayMinutes = 0) {
   msgEl.innerHTML = "";
+  const canRemote = state.session?.scopes?.includes("remote");
+
+  if (canRemote) {
+    const { res, data } = await api("/api/play-remote", {
+      method: "POST",
+      body: JSON.stringify({ actionId, delayMinutes }),
+    });
+    if (!res.ok) {
+      msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Remote play failed.")}</div>`;
+      return;
+    }
+    msgEl.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "Queued for campus gateway.")}</div>`;
+    return;
+  }
+
+  if (delayMinutes > 0) {
+    // LAN schedule path
+    const { res, data } = await api("/api/play-token", {
+      method: "POST",
+      body: JSON.stringify({ actionId }),
+    });
+    if (!res.ok || !data.token || !data.gatewayUrl) {
+      msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not authorize.")}</div>`;
+      return;
+    }
+    try {
+      const schedRes = await fetch(`${data.gatewayUrl}/schedule`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actionId, token: data.token, delayMinutes }),
+      });
+      const schedData = await schedRes.json().catch(() => ({}));
+      if (!schedRes.ok) {
+        msgEl.innerHTML = `<div class="error-banner">${escapeHtml(schedData.error || "Schedule failed.")}</div>`;
+        return;
+      }
+      msgEl.innerHTML = `<div class="success-banner">Scheduled in ${delayMinutes} min on campus gateway.</div>`;
+    } catch {
+      msgEl.innerHTML = `<div class="error-banner">Cannot reach the alarm gateway. Join church Wi‑Fi, or ask an admin for remote play access.</div>`;
+    }
+    return;
+  }
+
   const { res, data } = await api("/api/play-token", {
     method: "POST",
     body: JSON.stringify({ actionId }),
@@ -206,35 +251,14 @@ async function playAction(actionId, msgEl) {
     }
     msgEl.innerHTML = `<div class="success-banner">Sent to speakers.</div>`;
   } catch {
-    msgEl.innerHTML = `<div class="error-banner">Cannot reach the alarm gateway. Join the church Wi‑Fi network and try again. The site works on cellular, but play must go through the Pi on campus.</div>`;
+    msgEl.innerHTML = `<div class="error-banner">Cannot reach the alarm gateway. Join the church Wi‑Fi network and try again — or ask an admin for remote play access.</div>`;
   }
 }
 
 async function scheduleAction(actionId, label, delayMinutes, msgEl, listEl) {
-  msgEl.innerHTML = "";
-  const { res, data } = await api("/api/play-token", {
-    method: "POST",
-    body: JSON.stringify({ actionId }),
-  });
-  if (!res.ok || !data.token || !data.gatewayUrl) {
-    msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not authorize.")}</div>`;
-    return;
-  }
-  try {
-    const schedRes = await fetch(`${data.gatewayUrl}/schedule`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actionId, token: data.token, delayMinutes }),
-    });
-    const schedData = await schedRes.json().catch(() => ({}));
-    if (!schedRes.ok) {
-      msgEl.innerHTML = `<div class="error-banner">${escapeHtml(schedData.error || "Schedule failed.")}</div>`;
-      return;
-    }
-    msgEl.innerHTML = `<div class="success-banner">${escapeHtml(label)} scheduled in ${delayMinutes} min. Safe to close — the Pi will ring it.</div>`;
+  await playAction(actionId, msgEl, delayMinutes);
+  if (!state.session?.scopes?.includes("remote")) {
     await refreshSchedule(listEl);
-  } catch {
-    msgEl.innerHTML = `<div class="error-banner">Cannot reach the alarm gateway. Join church Wi‑Fi to schedule.</div>`;
   }
 }
 
@@ -357,7 +381,7 @@ async function renderAdmin() {
       <div class="stack">
         <div>
           <h1 class="page-title">PIN admin</h1>
-          <p class="muted" style="margin:0">Hashed PINs in Cloudflare D1. Share codes out-of-band.</p>
+          <p class="muted" style="margin:0">Hashed PINs in Cloudflare D1. Check <strong>Remote play</strong> only for people trusted to ring speakers from cell.</p>
         </div>
         <form class="card stack" id="pin-form">
           <div class="field"><label>Label</label><input name="label" required placeholder="Office desk" /></div>
@@ -366,6 +390,7 @@ async function renderAdmin() {
             <label><input type="checkbox" name="bells" checked /> Class bells</label>
             <label><input type="checkbox" name="evacuate" /> Evacuation</label>
             <label><input type="checkbox" name="admin" /> Admin</label>
+            <label><input type="checkbox" name="remote" /> Remote play (off campus)</label>
           </div>
           <button class="btn btn-primary" type="submit">Add PIN</button>
           <div id="admin-msg"></div>
@@ -397,6 +422,7 @@ async function renderAdmin() {
     if (fd.get("bells")) scopes.push("bells");
     if (fd.get("evacuate")) scopes.push("evacuate");
     if (fd.get("admin")) scopes.push("admin");
+    if (fd.get("remote")) scopes.push("remote");
     const { res, data } = await api("/api/admin/pins", {
       method: "POST",
       body: JSON.stringify({

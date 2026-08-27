@@ -1,4 +1,4 @@
-export type Scope = "bells" | "evacuate" | "admin";
+export type Scope = "bells" | "evacuate" | "admin" | "remote";
 
 export type SessionPayload = {
   pinId: string;
@@ -15,18 +15,21 @@ export type Env = {
   ASSETS: Fetcher;
   SESSION_SECRET: string;
   PLAY_JWT_SECRET: string;
+  GATEWAY_POLL_SECRET: string;
   GATEWAY_URL: string;
   BELL_ACTIONS: string;
   EVACUATE_ACTION: string;
 };
 
+/** Page access: admin implies bells/evacuate. Remote is never implied — must be granted. */
 export function hasScope(scopes: Scope[], needed: Scope): boolean {
+  if (needed === "remote") return scopes.includes("remote");
   if (scopes.includes("admin")) return true;
   return scopes.includes(needed);
 }
 
 export function normalizeScopes(raw: string[]): Scope[] {
-  const allowed = new Set<Scope>(["bells", "evacuate", "admin"]);
+  const allowed = new Set<Scope>(["bells", "evacuate", "admin", "remote"]);
   const out = new Set<Scope>();
   for (const s of raw) {
     if (s === "both") {
@@ -50,4 +53,11 @@ export function parseActionList(raw: string | undefined): ActionDef[] {
       return { id: id.trim(), label: (rest.join(":") || id).trim() };
     })
     .filter((a) => a.id);
+}
+
+export function actionAllowed(actionId: string, scopes: Scope[]): boolean {
+  if (scopes.includes("admin")) return true;
+  if (actionId.startsWith("bells.") && hasScope(scopes, "bells")) return true;
+  if (actionId.startsWith("evacuate.") && hasScope(scopes, "evacuate")) return true;
+  return false;
 }

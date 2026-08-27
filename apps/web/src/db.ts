@@ -93,3 +93,80 @@ export async function checkRateLimit(
 export async function clearRateLimit(env: Env, ip: string) {
   await env.DB.prepare(`DELETE FROM pin_rate_limits WHERE ip = ?`).bind(ip).run();
 }
+
+export type QueueJob = {
+  id: string;
+  action_id: string;
+  pin_id: string;
+  label: string;
+  delay_minutes: number;
+  status: string;
+  created_at: string;
+};
+
+export async function enqueuePlay(
+  env: Env,
+  input: {
+    id: string;
+    actionId: string;
+    pinId: string;
+    label: string;
+    delayMinutes: number;
+  },
+) {
+  await env.DB.prepare(
+    `INSERT INTO play_queue (id, action_id, pin_id, label, delay_minutes, status)
+     VALUES (?, ?, ?, ?, ?, 'pending')`,
+  )
+    .bind(
+      input.id,
+      input.actionId,
+      input.pinId,
+      input.label,
+      input.delayMinutes,
+    )
+    .run();
+}
+
+export async function claimPendingJobs(env: Env, limit = 5): Promise<QueueJob[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT id, action_id, pin_id, label, delay_minutes, status, created_at
+     FROM play_queue
+     WHERE status = 'pending'
+     ORDER BY created_at ASC
+     LIMIT ?`,
+  )
+    .bind(limit)
+    .all<QueueJob>();
+
+  const jobs = results ?? [];
+  for (const job of jobs) {
+    await env.DB.prepare(
+      `UPDATE play_queue SET status = 'claimed', claimed_at = datetime('now') WHERE id = ? AND status = 'pending'`,
+    )
+      .bind(job.id)
+      .run();
+  }
+  return jobs;
+}
+
+export async function finishJob(
+  env: Env,
+  id: string,
+  ok: boolean,
+  error?: string,
+) {
+  await env.DB.prepare(
+    `UPDATE play_queue
+     SET status = ?, error = ?, finished_at = datetime('now')
+     WHERE id = ?`,
+  )
+    .bind(ok ? "done" : "error", error ?? null, id)
+    .run();
+}
+
+export async function updatePinScopes(env: Env, id: string, scopes: string[]) {
+  await env.DB.prepare(`UPDATE alarm_pins SET scopes = ? WHERE id = ?`)
+    .bind(JSON.stringify(scopes), id)
+    .run();
+}
