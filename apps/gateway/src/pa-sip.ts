@@ -214,6 +214,10 @@ function loadUnarmedPromptPcm(): Buffer {
   return pcm.length ? pcm : loadTestPromptPcm();
 }
 
+function loadGoodbyePcm(): Buffer {
+  return loadAssetPcm("pa-sip-goodbye.pcm");
+}
+
 function waitForDtmf(
   dialog: SipDialog,
   timeoutMs: number,
@@ -272,6 +276,16 @@ async function playToPhone(dialog: SipDialog, pcm: Buffer): Promise<void> {
   }
 }
 
+/** Always say goodbye before BYE on accepted calls. */
+async function hangUpWithGoodbye(dialog: SipDialog): Promise<void> {
+  await playToPhone(dialog, loadGoodbyePcm());
+  try {
+    await dialog.bye?.();
+  } catch {
+    /* ignore */
+  }
+}
+
 async function handleSipTest(
   dialog: SipDialog,
   opts: { alreadyAccepted?: boolean } = {},
@@ -298,12 +312,7 @@ async function handleSipTest(
   });
 
   await playToPhone(dialog, loadTestPromptPcm());
-
-  try {
-    await dialog.bye?.();
-  } catch {
-    /* ignore */
-  }
+  await hangUpWithGoodbye(dialog);
   cleanup();
 }
 
@@ -318,11 +327,7 @@ async function handlePaLive(
       await dialog.reject?.(503, "Service Unavailable");
     } else {
       await playToPhone(dialog, loadUnarmedPromptPcm());
-      try {
-        await dialog.bye?.();
-      } catch {
-        /* ignore */
-      }
+      await hangUpWithGoodbye(dialog);
       activeCalls = Math.max(0, activeCalls - 1);
     }
     return;
@@ -335,11 +340,7 @@ async function handlePaLive(
       return;
     }
     await playToPhone(dialog, loadUnarmedPromptPcm());
-    try {
-      await dialog.bye?.();
-    } catch {
-      /* ignore */
-    }
+    await hangUpWithGoodbye(dialog);
     activeCalls = Math.max(0, activeCalls - 1);
     return;
   }
@@ -432,27 +433,8 @@ async function handleIvrMenu(dialog: SipDialog, speakerIds: string[]): Promise<v
 
   if (choice === "1") {
     console.log("[pa] IVR → page (talkback)");
-    // already counted in activeCalls; handlePaLive with alreadyAccepted won't increment again
-    // but handlePaLive increments if !alreadyAccepted. We already incremented — pass alreadyAccepted
-    // and don't double-count: handlePaLive with alreadyAccepted skips increment. Good.
-    // However cleanup on IVR vs PA: handlePaLive registers its own cleanup that decrements.
-    // Our IVR cleanup also decrements — double decrement risk.
-    // Fix: mark cleaned without decrement before handing off, or don't register IVR cleanup decrement for handoff.
-
-    // Hand off: disable IVR cleanup decrement by setting cleaned=true without decrementing... 
-    // Better approach: don't use shared activeCalls carefully.
-
-    cleaned = true; // prevent IVR cleanup from double-decrementing on end
-    // Manually keep activeCalls as-is for PA handler
+    cleaned = true; // hand off — PA cleanup owns activeCalls
     await handlePaLive(dialog, speakerIds, { alreadyAccepted: true });
-    // handlePaLive with alreadyAccepted does NOT increment — but we already +1'd.
-    // handlePaLive cleanup WILL decrement. Good.
-    // But handlePaLive also registers end handlers — and our IVR cleanup is no-op now due to cleaned=true.
-    // Problem: handlePaLive expects to have incremented OR alreadyAccepted means it won't increment,
-    // but its cleanup still decrements. We incremented once in IVR — OK.
-
-    // Wait - handlePaLive with alreadyAccepted doesn't add end/cleanup if... it always adds cleanup that decrements.
-    // activeCalls was +1 in IVR. handlePaLive alreadyAccepted: no +1. cleanup on end: -1. Perfect.
     return;
   }
 
@@ -460,16 +442,11 @@ async function handleIvrMenu(dialog: SipDialog, speakerIds: string[]): Promise<v
     console.log("[pa] IVR → phone-only test");
     cleaned = true; // hand off
     await handleSipTest(dialog, { alreadyAccepted: true });
-    // handleSipTest alreadyAccepted: no +1, cleanup -1. We +1'd in IVR. Good.
     return;
   }
 
   console.log(`[pa] IVR no valid choice (got ${choice ?? "timeout"}) — hanging up`);
-  try {
-    await dialog.bye?.();
-  } catch {
-    /* ignore */
-  }
+  await hangUpWithGoodbye(dialog);
   cleanup();
 }
 
