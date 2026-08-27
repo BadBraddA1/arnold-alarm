@@ -353,18 +353,29 @@ export async function setAllSpeakerVolumes(volume: number): Promise<void> {
   await setSpeakerVolumes(volume);
 }
 
-/** Lower for bells during play (per speaker), then restore emergency level. */
+/** Lower for bells / per-speaker Test tone, then restore emergency level. */
 export async function withActionVolume<T>(
   actionId: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const isBells = actionId.startsWith("bells.");
+  const isBells =
+    actionId.startsWith("bells.") || actionId.startsWith("test.speaker:");
   const restoreVol = volumeProfile.evac;
   try {
     if (isBells) {
       const speakers = await listProtectSpeakers();
       const map: Record<string, number> = {};
-      for (const s of speakers) map[s.id] = bellVolumeForSpeaker(s.id);
+      const one = actionId.startsWith("test.speaker:")
+        ? actionId.slice("test.speaker:".length).trim()
+        : "";
+      for (const s of speakers) {
+        // Single-speaker test: only that horn uses its bell level; others stay at emergency.
+        if (one) {
+          map[s.id] = s.id === one ? bellVolumeForSpeaker(s.id) : restoreVol;
+        } else {
+          map[s.id] = bellVolumeForSpeaker(s.id);
+        }
+      }
       await setSpeakerVolumes(map);
     } else {
       await setSpeakerVolumes(restoreVol);

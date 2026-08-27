@@ -36,7 +36,7 @@ export async function playLocalAction(actionId: string): Promise<void> {
       (process.env.TEST_ONE_FILE || "Test_Start_Tone.mp3").trim() ||
       "Test_Start_Tone.mp3";
     const { startTalkback } = await import("./talkback.js");
-    await withActionVolume("test.speakers", () =>
+    await withActionVolume(actionId, () =>
       startTalkback({
         actionId,
         file,

@@ -783,7 +783,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
       actionId === "test.speakers" || actionId === "bells.test"
         ? "Notifying desk phones, then start tone + TEST ACOC on all speakers."
         : actionId.startsWith("test.speaker:")
-          ? "Playing start tone on that speaker only."
+          ? "Playing start tone on that speaker at its bell volume."
         : actionId === "bells.second"
           ? "Playing now — start bell tone twice (all speakers)."
           : actionId === "bells.first"
