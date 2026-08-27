@@ -34,8 +34,8 @@ updates = {
   "PA_SIP_PORT": "5060",
   "PA_SPEAKER_IDS": "$SPEAKERS",
   "PA_ACCEPT_ANY": "1",
-  "TALK_CONSOLE_IP": "$TALK_IP",
 }
+# Do not set TALK_CONSOLE_IP by default — exact-IP whitelist blocks Talk phones.
 lines = text.splitlines()
 keys = set()
 out = []

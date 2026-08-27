@@ -101,12 +101,13 @@ function parseSpeakerIds(): string[] {
   }
 }
 
+/** Called party from Request-URI / To — never From (that is the caller). */
 function extractCalledUser(dialog: SipDialog): string {
   const candidates: string[] = [];
-  if (typeof dialog.remoteUri === "string") candidates.push(dialog.remoteUri);
   const uri = dialog.request?.uri;
   if (typeof uri === "string") candidates.push(uri);
   else if (uri && typeof uri === "object" && uri.user) candidates.push(String(uri.user));
+
   const to = dialog.request?.headers?.to as
     | { uri?: { user?: string } | string }
     | string
@@ -118,17 +119,18 @@ function extractCalledUser(dialog: SipDialog): string {
   }
 
   for (const c of candidates) {
-    const digits = c.match(/(?:sip:)?(\d{3,15})\b/i);
-    if (digits?.[1]) return digits[1];
-    try {
-      const normalized = c.includes(":") ? c.replace(/^sip:/i, "sip:") : `sip:${c}`;
-      const u = new URL(normalized);
-      if (u.username) return u.username;
-      const pathUser = u.pathname.replace(/^\//, "");
-      if (pathUser) return pathUser;
-    } catch {
-      /* ignore */
+    const raw = String(c).trim();
+    // sip:1011@host or sip:1011;user=phone
+    const sipUser = raw.match(/^sip:([^@;>\s]+)/i);
+    if (sipUser?.[1]) {
+      try {
+        return decodeURIComponent(sipUser[1]);
+      } catch {
+        return sipUser[1];
+      }
     }
+    // bare extension
+    if (/^\d{3,15}$/.test(raw)) return raw;
   }
   return "";
 }
@@ -368,10 +370,11 @@ export async function startPaAudioSocket(): Promise<void> {
         const acceptAny =
           process.env.PA_ACCEPT_ANY !== "0" && process.env.PA_ACCEPT_ANY !== "false";
 
+        console.log(`[pa] inbound INVITE called="${called || "?"}"`);
+
         const isTest =
           called === testExtension ||
-          called.endsWith(testExtension) ||
-          called.includes(testExtension);
+          called.endsWith(testExtension);
 
         if (isTest) {
           await handleSipTest(dialog);
@@ -381,11 +384,12 @@ export async function startPaAudioSocket(): Promise<void> {
         const isPa =
           called === extension ||
           called.endsWith(extension) ||
-          (!called && acceptAny) ||
-          (acceptAny && !isTest);
+          (!called && acceptAny);
 
         if (!isPa) {
-          console.log(`[pa] rejecting call (got "${called}", want ${extension} or ${testExtension})`);
+          console.log(
+            `[pa] rejecting call (got "${called}", want ${extension} or ${testExtension})`,
+          );
           await dialog.reject?.(404, "Not Found");
           return;
         }
