@@ -1,11 +1,22 @@
 /**
- * Register the gateway as a UniFi Talk "Third-Party Device" (SIP client).
- * Talk then dials the assigned extension → INVITE lands on our existing SIP UA.
+ * Register the gateway as one or more SIP clients (Alltree / UniFi Talk, etc.).
+ * The PBX then dials those extensions → INVITE lands on our SIP UA.
  */
 import { createRequire } from "node:module";
 import { networkInterfaces } from "node:os";
 
 const require = createRequire(import.meta.url);
+
+export type TalkAccountMode = "menu" | "pa" | "test";
+
+export type TalkAccount = {
+  user: string;
+  password: string;
+  host: string;
+  port: number;
+  mode: TalkAccountMode;
+  expires: number;
+};
 
 export type TalkRegStatus = {
   enabled: boolean;
@@ -13,6 +24,12 @@ export type TalkRegStatus = {
   host: string | null;
   user: string | null;
   lastError: string | null;
+  accounts: Array<{
+    user: string;
+    mode: TalkAccountMode;
+    registered: boolean;
+    lastError: string | null;
+  }>;
 };
 
 type SipResponse = {
@@ -25,14 +42,30 @@ type SipSend = {
   send: (msg: Record<string, unknown>, callback?: (res: SipResponse) => void) => void;
 };
 
-let timer: ReturnType<typeof setTimeout> | null = null;
-let registered = false;
-let lastError: string | null = null;
-let host: string | null = null;
-let user: string | null = null;
-let seq = 1;
-let callId = "";
-let fromTag = "";
+type RegHandle = {
+  account: TalkAccount;
+  timer: ReturnType<typeof setTimeout> | null;
+  registered: boolean;
+  lastError: string | null;
+  seq: number;
+  callId: string;
+  fromTag: string;
+};
+
+let handles: RegHandle[] = [];
+let sipMod: {
+  generateBranch: () => string;
+  generateTag: () => string;
+  parseUri: (u: string) => unknown;
+} | null = null;
+let digestMod: {
+  signRequest: (
+    ctx: Record<string, unknown>,
+    request: Record<string, unknown>,
+    response: SipResponse | null,
+    credentials: { user: string; password: string },
+  ) => unknown;
+} | null = null;
 
 function lanIp(): string {
   const fromEnv = process.env.PA_PUBLIC_IP || process.env.PA_BIND_IP;
@@ -48,20 +81,88 @@ function lanIp(): string {
   return "127.0.0.1";
 }
 
+function parseMode(raw: string | undefined, fallback: TalkAccountMode): TalkAccountMode {
+  const m = (raw || fallback).trim().toLowerCase();
+  if (m === "pa" || m === "page" || m === "live") return "pa";
+  if (m === "test") return "test";
+  return "menu";
+}
+
+/** Accounts from env: menu line (PA_TALK_*) + optional direct-page line (PA_PAGE_*). */
+export function parseTalkAccounts(): TalkAccount[] {
+  const host = (process.env.PA_TALK_HOST || "").trim();
+  const port = Number(process.env.PA_TALK_PORT || 5060);
+  const expires = Math.max(60, Number(process.env.PA_TALK_EXPIRES || 300));
+  const out: TalkAccount[] = [];
+
+  const talkUser = (process.env.PA_TALK_USER || "").trim();
+  const talkPass = (process.env.PA_TALK_PASS || "").trim();
+  if (host && talkUser && talkPass) {
+    out.push({
+      user: talkUser,
+      password: talkPass,
+      host,
+      port,
+      mode: parseMode(process.env.PA_TALK_MODE, "menu"),
+      expires,
+    });
+  }
+
+  const pageUser = (
+    process.env.PA_PAGE_USER ||
+    process.env.PA_PAGE_EXT ||
+    ""
+  ).trim();
+  const pagePass = (process.env.PA_PAGE_PASS || "").trim();
+  const pageHost = (process.env.PA_PAGE_HOST || host).trim();
+  const pagePort = Number(process.env.PA_PAGE_PORT || port || 5060);
+  if (pageHost && pageUser && pagePass) {
+    const dup = out.some((a) => a.user === pageUser && a.host === pageHost);
+    if (!dup) {
+      out.push({
+        user: pageUser,
+        password: pagePass,
+        host: pageHost,
+        port: pagePort,
+        mode: parseMode(process.env.PA_PAGE_MODE, "pa"),
+        expires: Math.max(60, Number(process.env.PA_PAGE_EXPIRES || expires)),
+      });
+    }
+  }
+
+  return out;
+}
+
+export function modeForCalledUser(called: string): TalkAccountMode | null {
+  if (!called) return null;
+  for (const a of parseTalkAccounts()) {
+    if (called === a.user || called.endsWith(a.user)) return a.mode;
+  }
+  return null;
+}
+
 export function getTalkRegStatus(): TalkRegStatus {
+  const primary = handles[0];
   return {
-    enabled: Boolean(host && user),
-    registered,
-    host,
-    user,
-    lastError,
+    enabled: handles.length > 0,
+    registered: handles.some((h) => h.registered),
+    host: primary?.account.host ?? null,
+    user: primary?.account.user ?? null,
+    lastError: handles.find((h) => h.lastError)?.lastError ?? null,
+    accounts: handles.map((h) => ({
+      user: h.account.user,
+      mode: h.account.mode,
+      registered: h.registered,
+      lastError: h.lastError,
+    })),
   };
 }
 
 export function stopTalkRegistration(): void {
-  if (timer) clearTimeout(timer);
-  timer = null;
-  registered = false;
+  for (const h of handles) {
+    if (h.timer) clearTimeout(h.timer);
+  }
+  handles = [];
 }
 
 /**
@@ -70,74 +171,74 @@ export function stopTalkRegistration(): void {
 export function startTalkRegistration(sipSend: SipSend, contactPort: number): void {
   stopTalkRegistration();
 
-  host = (process.env.PA_TALK_HOST || "").trim() || null;
-  user = (process.env.PA_TALK_USER || "").trim() || null;
-  const pass = (process.env.PA_TALK_PASS || "").trim();
-  const targetPort = Number(process.env.PA_TALK_PORT || 5060);
-  const expires = Math.max(60, Number(process.env.PA_TALK_EXPIRES || 300));
-
-  if (!host || !user || !pass) {
+  const accounts = parseTalkAccounts();
+  if (!accounts.length) {
     console.log(
-      "[pa/talk] Third-Party Device registration idle — set PA_TALK_HOST, PA_TALK_USER, PA_TALK_PASS",
+      "[pa/talk] SIP registration idle — set PA_TALK_HOST/USER/PASS (and optional PA_PAGE_USER/PASS)",
     );
     return;
   }
 
-  let sip: {
-    generateBranch: () => string;
-    generateTag: () => string;
-    parseUri: (u: string) => unknown;
-  };
-  let digest: {
-    signRequest: (
-      ctx: Record<string, unknown>,
-      request: Record<string, unknown>,
-      response: SipResponse | null,
-      credentials: { user: string; password: string },
-    ) => unknown;
-  };
   try {
-    sip = require("@vexyl.ai/sip");
-    digest = require("@vexyl.ai/sip/digest");
+    sipMod = require("@vexyl.ai/sip");
+    digestMod = require("@vexyl.ai/sip/digest");
   } catch (err) {
-    lastError = "sip module missing";
     console.error("[pa/talk] cannot load @vexyl.ai/sip", err);
     return;
   }
 
   const contactHost = lanIp();
-  const credentials = { user, password: pass };
-  const authCtx: Record<string, unknown> = {};
-  const aor = `sip:${user}@${host}`;
-  const registrarUri = `sip:${host}:${targetPort}`;
-
-  if (!callId) {
-    callId = `${Date.now()}-${Math.random().toString(16).slice(2)}@${contactHost}`;
+  for (const account of accounts) {
+    startOneRegistration(sipSend, contactPort, contactHost, account);
   }
-  if (!fromTag) fromTag = sip.generateTag();
+}
+
+function startOneRegistration(
+  sipSend: SipSend,
+  contactPort: number,
+  contactHost: string,
+  account: TalkAccount,
+): void {
+  const sip = sipMod!;
+  const digest = digestMod!;
+  const handle: RegHandle = {
+    account,
+    timer: null,
+    registered: false,
+    lastError: null,
+    seq: 1,
+    callId: `${Date.now()}-${account.user}-${Math.random().toString(16).slice(2)}@${contactHost}`,
+    fromTag: sip.generateTag(),
+  };
+  handles.push(handle);
+
+  const credentials = { user: account.user, password: account.password };
+  const authCtx: Record<string, unknown> = {};
+  const aor = `sip:${account.user}@${account.host}`;
+  const registrarUri = `sip:${account.host}:${account.port}`;
+  const { expires } = account;
 
   const schedule = (ms: number) => {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => registerOnce(false), ms);
+    if (handle.timer) clearTimeout(handle.timer);
+    handle.timer = setTimeout(() => registerOnce(false), ms);
   };
 
   const buildRequest = () => {
-    seq += 1;
+    handle.seq += 1;
     return {
       method: "REGISTER",
       uri: registrarUri,
       version: "2.0",
       headers: {
-        // sip.js expects via as an array; empty lets transport fill hop
         via: [],
         "max-forwards": 70,
-        from: { uri: aor, params: { tag: fromTag } },
+        from: { uri: aor, params: { tag: handle.fromTag } },
         to: { uri: aor },
-        "call-id": callId,
-        cseq: { seq, method: "REGISTER" },
+        "call-id": handle.callId,
+        cseq: { seq: handle.seq, method: "REGISTER" },
         contact: [
           {
-            uri: `sip:${user}@${contactHost}:${contactPort}`,
+            uri: `sip:${account.user}@${contactHost}:${contactPort}`,
             params: { expires: String(expires) },
           },
         ],
@@ -151,17 +252,17 @@ export function startTalkRegistration(sipSend: SipSend, contactPort: number): vo
 
   const onFinal = (res: SipResponse) => {
     if (res.status >= 200 && res.status < 300) {
-      registered = true;
-      lastError = null;
+      handle.registered = true;
+      handle.lastError = null;
       console.log(
-        `[pa/talk] registered ${user} → ${host}:${targetPort} (expires ${expires}s)`,
+        `[pa/talk] registered ${account.user} (${account.mode}) → ${account.host}:${account.port} (expires ${expires}s)`,
       );
       schedule(Math.floor(expires * 0.45) * 1000);
       return;
     }
-    registered = false;
-    lastError = `${res.status} ${res.reason || ""}`.trim();
-    console.error("[pa/talk] register failed:", lastError);
+    handle.registered = false;
+    handle.lastError = `${res.status} ${res.reason || ""}`.trim();
+    console.error(`[pa/talk] register ${account.user} failed:`, handle.lastError);
     schedule(20000);
   };
 
@@ -182,8 +283,8 @@ export function startTalkRegistration(sipSend: SipSend, contactPort: number): vo
               try {
                 onFinal(res2);
               } catch (err) {
-                lastError = String(err);
-                console.error("[pa/talk] register callback error", err);
+                handle.lastError = String(err);
+                console.error(`[pa/talk] register ${account.user} callback error`, err);
                 schedule(20000);
               }
             });
@@ -191,18 +292,20 @@ export function startTalkRegistration(sipSend: SipSend, contactPort: number): vo
           }
           onFinal(res);
         } catch (err) {
-          lastError = String(err);
-          console.error("[pa/talk] register callback error", err);
+          handle.lastError = String(err);
+          console.error(`[pa/talk] register ${account.user} callback error`, err);
           schedule(20000);
         }
       });
     } catch (err) {
-      lastError = String(err);
-      console.error("[pa/talk] register send error", err);
+      handle.lastError = String(err);
+      console.error(`[pa/talk] register ${account.user} send error`, err);
       schedule(20000);
     }
   };
 
-  console.log(`[pa/talk] registering as ${user} @ ${host}:${targetPort}…`);
+  console.log(
+    `[pa/talk] registering as ${account.user} (${account.mode}) @ ${account.host}:${account.port}…`,
+  );
   registerOnce(false);
 }

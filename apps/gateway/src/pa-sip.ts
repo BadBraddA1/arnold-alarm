@@ -21,6 +21,7 @@ import {
 } from "./talkback.js";
 import {
   getTalkRegStatus,
+  modeForCalledUser,
   startTalkRegistration,
   stopTalkRegistration,
 } from "./talk-register.js";
@@ -955,24 +956,22 @@ export async function startPaAudioSocket(): Promise<void> {
         const called = extractCalledUser(dialog);
         const acceptAny =
           process.env.PA_ACCEPT_ANY !== "0" && process.env.PA_ACCEPT_ANY !== "false";
-        const talkUser = (process.env.PA_TALK_USER || "").trim();
-        const talkMode = (process.env.PA_TALK_MODE || "menu").toLowerCase();
+        const sipMode = modeForCalledUser(called);
 
-        console.log(`[pa] inbound INVITE called="${called || "?"}"`);
+        console.log(
+          `[pa] inbound INVITE called="${called || "?"}"${sipMode ? ` mode=${sipMode}` : ""}`,
+        );
 
-        const isTalkDevice =
-          Boolean(talkUser) && (called === talkUser || called.endsWith(talkUser));
-
-        // Talk third-party device → IVR menu (1=page, 2=test) unless forced
-        if (isTalkDevice && talkMode !== "pa" && talkMode !== "test") {
+        // Registered SIP lines (Alltree / Talk): mode from PA_TALK_* / PA_PAGE_*
+        if (sipMode === "menu") {
           await handleIvrMenu(dialog, speakerIds);
           return;
         }
-        if (isTalkDevice && talkMode === "test") {
+        if (sipMode === "test") {
           await handleSipTest(dialog);
           return;
         }
-        if (isTalkDevice && talkMode === "pa") {
+        if (sipMode === "pa") {
           await handlePaLive(dialog, speakerIds);
           return;
         }
@@ -989,7 +988,7 @@ export async function startPaAudioSocket(): Promise<void> {
 
         if (!isPa) {
           console.log(
-            `[pa] rejecting call (got "${called}", want ${extension}, ${testExtension}, or Talk user)`,
+            `[pa] rejecting call (got "${called}", want ${extension}, ${testExtension}, or registered SIP users)`,
           );
           await dialog.reject?.(404, "Not Found");
           return;
