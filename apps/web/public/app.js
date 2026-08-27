@@ -327,8 +327,8 @@ function renderHome() {
           canBells || canEvac
             ? `<div class="card stack" style="gap:0.55rem;padding:1rem 1.1rem">
                 <p style="margin:0;font-weight:600">Speaker check</p>
-                <p class="muted" style="margin:0;font-size:0.85rem">Play <strong>TEST ACOC</strong> on every campus speaker while you walk the building.</p>
-                <button type="button" class="btn btn-ghost btn-block" id="home-test-speakers" style="min-height:2.5rem">TEST ACOC — all speakers</button>
+                <p class="muted" style="margin:0;font-size:0.85rem">Plays the start tone, then <strong>TEST ACOC</strong> on every campus speaker while you walk the building.</p>
+                <button type="button" class="btn btn-ghost btn-block" id="home-test-speakers" style="min-height:2.5rem">Speaker check — all speakers</button>
                 <div id="home-test-msg"></div>
               </div>`
             : ""
@@ -584,7 +584,16 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
   }
   try {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), actionId === "test.speakers" ? 20000 : 8000);
+    const timer = setTimeout(
+      () => ctrl.abort(),
+      actionId === "test.speakers"
+        ? 45000
+        : actionId === "bells.second"
+          ? 30000
+          : actionId === "bells.first"
+            ? 15000
+            : 8000,
+    );
     const playRes = await fetch(`${data.gatewayUrl}/play`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -600,10 +609,14 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
     await logAudit(actionId, "lan", "done", loop ? "loop" : undefined);
     const playingMsg =
       actionId === "test.speakers" || actionId === "bells.test"
-        ? "Playing now — TEST ACOC on all speakers (walk the building)."
-        : loop
-          ? "Playing now on campus speakers (looping until all clear)."
-          : "Playing now on campus speakers.";
+        ? "Playing now — start tone, then TEST ACOC on all speakers (walk the building)."
+        : actionId === "bells.second"
+          ? "Playing now — Bell 1, 8 second pause, Bell 1 again (all speakers)."
+          : actionId === "bells.first"
+            ? "Playing now — start bell tone (Lobby + Fellowship)."
+            : loop
+              ? "Playing now on campus speakers (looping until all clear)."
+              : "Playing now on campus speakers.";
     msgEl.innerHTML = `<div class="success-banner">${playingMsg}</div>`;
   } catch {
     msgEl.innerHTML = `<div class="error-banner">Pi offline — join church Wi‑Fi and try again, or ask an admin for remote play access.</div>`;
@@ -926,7 +939,7 @@ function renderBells() {
         <p class="muted" style="margin:0.5rem 0 0;font-size:0.85rem">Play now</p>
         ${actions.map((a) => `<button type="button" class="btn btn-primary btn-block" data-play="${escapeHtml(a.id)}">${escapeHtml(a.label)}</button>`).join("")}
         <div id="play-msg"></div>
-        <p class="muted" style="margin:0;font-size:0.8rem">Audio for first/second bell is wired on the gateway once the clips are on the NVR.</p>
+        <p class="muted" style="margin:0;font-size:0.8rem">First bell = start tone on Lobby + Fellowship. Second bell = Bell 1 twice with an 8s gap on all speakers.</p>
       </div>
     </main>`;
   tickClock();
@@ -1054,9 +1067,9 @@ function renderEvacuate() {
         <div class="evac-speaker-check stack" style="gap:0.45rem">
           <p class="evac-meta">Speaker check / test mode</p>
           <button type="button" class="btn btn-ghost btn-block" data-play="test.speakers">
-            TEST ACOC — all speakers
+            Speaker check — all speakers
           </button>
-          <p class="evac-meta" style="font-size:0.8rem">Plays the campus TEST ACOC clip on every AI speaker (~16 sec). Use while walking the building.</p>
+          <p class="evac-meta" style="font-size:0.8rem">Start tone, then TEST ACOC on every AI speaker. Use while walking the building.</p>
         </div>
       </div>
       <div class="evac-thumb-zone">

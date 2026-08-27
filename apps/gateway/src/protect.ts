@@ -8,12 +8,24 @@
  * - automation: login + private API run (best-effort)
  */
 
+export type SequenceStep =
+  | { kind: "wait"; ms: number }
+  | {
+      kind: "talkback";
+      file: string;
+      speakerIds: string[];
+      repeat?: number;
+    }
+  | { kind: "ringtone"; ringtoneId: string; repeat?: number }
+  | { kind: "testSound"; speakerIds: string[] };
+
 export type ActionDef =
   | { kind: "webhook"; url: string }
   | { kind: "alarmWebhook"; id: string }
   | { kind: "testSound"; speakerIds: string[] }
   | { kind: "ringtone"; ringtoneId: string; repeat?: number }
   | { kind: "talkback"; file: string; speakerIds: string[]; repeat?: number }
+  | { kind: "sequence"; steps: SequenceStep[] }
   | { kind: "automation"; id: string };
 
 export type PlayOptions = {
@@ -412,6 +424,39 @@ export async function checkProtectHealth(): Promise<{
   }
 }
 
+async function runSequence(
+  steps: SequenceStep[],
+  options: PlayOptions = {},
+): Promise<void> {
+  const actionId = options.actionId || "sequence";
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    if (step.kind === "wait") {
+      const ms = Math.max(0, Math.min(120_000, Number(step.ms) || 0));
+      if (ms > 0) await new Promise((r) => setTimeout(r, ms));
+      continue;
+    }
+    if (step.kind === "talkback") {
+      const { startTalkback } = await import("./talkback.js");
+      await startTalkback({
+        actionId: `${actionId}.step${i}`,
+        file: step.file,
+        speakerIds: step.speakerIds,
+        repeat: step.repeat,
+        awaitDone: true,
+      });
+      continue;
+    }
+    if (step.kind === "ringtone") {
+      await playRingtone(step.ringtoneId, step.repeat ?? 1);
+      continue;
+    }
+    if (step.kind === "testSound") {
+      await triggerTestSound(step.speakerIds);
+    }
+  }
+}
+
 export async function triggerAction(def: ActionDef, options: PlayOptions = {}) {
   if (def.kind === "webhook") {
     await triggerWebhook(def.url);
@@ -439,6 +484,10 @@ export async function triggerAction(def: ActionDef, options: PlayOptions = {}) {
       loop: options.loop,
       repeat: options.repeat ?? def.repeat,
     });
+    return;
+  }
+  if (def.kind === "sequence") {
+    await runSequence(def.steps, options);
     return;
   }
   await triggerAutomation(def.id);

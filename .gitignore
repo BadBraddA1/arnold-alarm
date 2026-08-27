@@ -8,6 +8,7 @@ dist
 *.tsbuildinfo
 .DS_Store
 apps/gateway/.env
+apps/gateway/audio/
 apps/web/.env.local
 *.log
 .vercel

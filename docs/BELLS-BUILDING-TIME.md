@@ -1,27 +1,34 @@
 # Building-time bells
 
-**Status:** UI shipped — schedule First / Second bell against the building clock (America/Chicago). List shows the scheduled Central time; **Void** cancels before it fires.
+**Status:** UI + campus audio wired — First / Second bell against the building clock (America/Chicago). List shows Central fire time; **Void** cancels before it fires.
 
 ## Product
 
-1. **First bell** / **Second bell** only (period start/end, chapel, and TEST ACOC removed from the bells panel).
-2. **Schedule at building time** — hour : minute + AM/PM on Central time; converts to a delay and queues on campus (LAN timer) or in the cloud queue (remote PIN).
-3. **Play now** — one-tap each bell.
-4. **See time + Void** — pending list shows Central fire time and countdown; **Void** removes it (LAN gateway or cloud `/api/schedule`).
+1. **First bell** — `Start_Bell_Tone.mp3` on **Lobby + Fellowship** only (not hallways).
+2. **Second bell** — `Bell_1.mp3` on all speakers, **8 second** silence, `Bell_1.mp3` again.
+3. **Schedule at building time** — hour : minute + AM/PM Central; LAN timer or cloud queue.
+4. **See time + Void** — pending list with Central fire time; Void removes it.
 
-## Audio (pending clips)
+## Audio on the Pi
 
-Wire Protect ringtone IDs on the Pi when the files are uploaded:
+Files in `~/.config/arnold-alarm/audio/` (talkback / sequence ACTIONS):
 
-| Action | `ACTIONS` key | Notes |
-|---|---|---|
-| First bell | `bells.first` | Placeholder may still be TEST ACOC until real clip is on the NVR |
-| Second bell | `bells.second` | Same |
+| File | Used by |
+|---|---|
+| `Start_Bell_Tone.mp3` | First bell |
+| `Bell_1.mp3` | Second bell (×2) |
+| `Test_Start_Tone.mp3` | PA preamble + speaker-check preamble |
 
 ```bash
-# on Pi ~/.config/arnold-alarm/gateway.env — ACTIONS JSON
-"bells.first": { "kind": "ringtone", "ringtoneId": "<id>" },
-"bells.second": { "kind": "ringtone", "ringtoneId": "<id>" }
+# gateway.env ACTIONS (abridged)
+"bells.first": { "kind": "sequence", "steps": [
+  { "kind": "talkback", "file": "Start_Bell_Tone.mp3", "speakerIds": ["<lobby>","<fellowship>"] }
+]},
+"bells.second": { "kind": "sequence", "steps": [
+  { "kind": "talkback", "file": "Bell_1.mp3", "speakerIds": ["…all four…"] },
+  { "kind": "wait", "ms": 8000 },
+  { "kind": "talkback", "file": "Bell_1.mp3", "speakerIds": ["…all four…"] }
+]}
 ```
 
 Then `sudo systemctl restart arnold-alarm-gateway`.
@@ -29,12 +36,12 @@ Then `sudo systemctl restart arnold-alarm-gateway`.
 ## Technical
 
 - Worker `BELL_ACTIONS`: `bells.first:First bell,bells.second:Second bell`
-- Client computes `delayMinutes` from Central wall time (max 12 hours; if time already passed today, schedules tomorrow).
-- **Remote:** delayed jobs stay `scheduled` in D1 with `fire_at` until due (or voided); Pi claims only when due.
-- **LAN:** gateway `setTimeout` schedule; GET/DELETE `/schedule`.
-- Gateway accepts delays up to 720 minutes (12h).
+- Client computes `delayMinutes` from Central wall time (max 12 hours).
+- Gateway `sequence` action kind runs talkback / wait / ringtone steps in order.
+- `PA_PREAMBLE_FILE=Test_Start_Tone.mp3` (set `off` to skip).
 
 ## Later (optional)
 
 - Persist LAN schedules across Pi reboot
 - Recurring weekday period schedule
+- Change which speakers get the first-bell start tone

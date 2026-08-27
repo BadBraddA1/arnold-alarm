@@ -363,6 +363,8 @@ export async function startTalkback(input: {
   speakerIds: string[];
   loop?: boolean;
   repeat?: number;
+  /** Wait until the clip finishes (sequences, PA preamble). Default: return after arm. */
+  awaitDone?: boolean;
 }): Promise<void> {
   if (playbackPromise) {
     stopTalkback();
@@ -409,6 +411,9 @@ export async function startTalkback(input: {
 
   // Let the session arm before returning — reduces clipped starts.
   await sleep(ARM_MS + 50);
+  if (input.awaitDone) {
+    await playbackPromise;
+  }
 }
 
 /** Live mic/SIP PCM → Protect talkback (convenience PA). */

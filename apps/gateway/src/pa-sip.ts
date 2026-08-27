@@ -91,7 +91,11 @@ function parseSpeakerIds(): string[] {
   try {
     const actions = JSON.parse(process.env.ACTIONS || "{}") as Record<
       string,
-      { kind?: string; speakerIds?: string[] }
+      {
+        kind?: string;
+        speakerIds?: string[];
+        steps?: Array<{ kind?: string; speakerIds?: string[] }>;
+      }
     >;
     const ids = new Set<string>();
     for (const def of Object.values(actions)) {
@@ -100,6 +104,13 @@ function parseSpeakerIds(): string[] {
         Array.isArray(def.speakerIds)
       ) {
         for (const id of def.speakerIds) ids.add(id);
+      }
+      if (def?.kind === "sequence" && Array.isArray(def.steps)) {
+        for (const step of def.steps) {
+          if (Array.isArray(step.speakerIds)) {
+            for (const id of step.speakerIds) ids.add(id);
+          }
+        }
       }
     }
     return [...ids];
@@ -515,8 +526,26 @@ async function handlePaLive(
   }
 
   console.log(
-    `[pa] live talkback started (ext ${extension}) → ${speakerIds.length} speakers`,
+    `[pa] live talkback starting (ext ${extension}) → ${speakerIds.length} speakers`,
   );
+
+  const preamble =
+    (process.env.PA_PREAMBLE_FILE || "Test_Start_Tone.mp3").trim();
+  if (preamble && preamble.toLowerCase() !== "off" && preamble.toLowerCase() !== "none") {
+    try {
+      const { startTalkback } = await import("./talkback.js");
+      console.log(`[pa] preamble → ${preamble}`);
+      await startTalkback({
+        actionId: "pa.preamble",
+        file: preamble,
+        speakerIds,
+        awaitDone: true,
+      });
+    } catch (err) {
+      console.error("[pa] preamble failed", err);
+      // Still allow live page if preamble clip is missing/broken.
+    }
+  }
 
   const pcm = new Readable({
     read() {
