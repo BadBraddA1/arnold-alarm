@@ -49,6 +49,7 @@ function setSessionFromAuth(data) {
 }
 
 async function forceLogout(reason) {
+  stopLocalPhoneAlarm();
   stopLiveSync();
   try {
     await api("/api/auth/logout", { method: "POST" });
@@ -1238,6 +1239,134 @@ function wireHoldConfirm(btn, onConfirm) {
   });
 }
 
+/** Local phone alarm during the 10s Red/Blue arming countdown (not campus speakers). */
+let localAlarmCtx = null;
+let localAlarmNodes = [];
+let evacCountdownTimer = null;
+
+function stopLocalPhoneAlarm() {
+  for (const n of localAlarmNodes) {
+    try {
+      n.stop?.();
+      n.disconnect?.();
+    } catch {
+      /* ignore */
+    }
+  }
+  localAlarmNodes = [];
+  if (localAlarmCtx) {
+    try {
+      localAlarmCtx.close();
+    } catch {
+      /* ignore */
+    }
+    localAlarmCtx = null;
+  }
+  if (evacCountdownTimer) {
+    clearInterval(evacCountdownTimer);
+    evacCountdownTimer = null;
+  }
+}
+
+function startLocalPhoneAlarm(tone = "red") {
+  stopLocalPhoneAlarm();
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  const ctx = new AC();
+  localAlarmCtx = ctx;
+  const master = ctx.createGain();
+  master.gain.value = 0.22;
+  master.connect(ctx.destination);
+
+  const hi = tone === "blue" ? 880 : 980;
+  const lo = tone === "blue" ? 620 : 720;
+  let t = ctx.currentTime;
+  // ~10s of alternating beeps on this device only
+  for (let i = 0; i < 40; i++) {
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = "square";
+    osc.frequency.value = i % 2 === 0 ? hi : lo;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.9, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
+    osc.connect(g);
+    g.connect(master);
+    osc.start(t);
+    osc.stop(t + 0.22);
+    localAlarmNodes.push(osc);
+    t += 0.25;
+  }
+  try {
+    navigator.vibrate?.([200, 100, 200, 100, 200]);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * 10s arming countdown: phone alarms locally; Send now / Cancel / auto-fire at 0.
+ */
+function startEvacArmCountdown({ actionId, label, tone, onFire }) {
+  stopLocalPhoneAlarm();
+  const TOTAL = 10;
+  let remaining = TOTAL;
+  let finished = false;
+  const box = $("#evac-confirm");
+  if (!box) return;
+
+  const paint = () => {
+    box.innerHTML = `
+      <div class="confirm-box confirm-box--${tone} stack confirm-safe evac-countdown">
+        <p class="evac-countdown-label" style="margin:0;text-align:center;font-weight:600">
+          Arming <strong>${escapeHtml(label)}</strong>
+        </p>
+        <div class="evac-countdown-num" id="evac-count-num" aria-live="polite">${remaining}</div>
+        <p class="evac-meta" style="margin:0;text-align:center">
+          This phone is alarming. Campus speakers stay silent until it sends.
+          Auto-sends in <strong id="evac-count-sec">${remaining}</strong>s — or send now / cancel.
+        </p>
+        <div class="evac-countdown-bar" aria-hidden="true"><span style="width:${((TOTAL - remaining) / TOTAL) * 100}%"></span></div>
+        <button type="button" class="btn btn-code-${tone} btn-block" id="evac-send-now">Send now</button>
+        <button type="button" class="btn btn-ghost btn-block" data-cancel-evac>Cancel</button>
+      </div>`;
+  };
+
+  const finish = (send) => {
+    if (finished) return;
+    finished = true;
+    stopLocalPhoneAlarm();
+    box.innerHTML = "";
+    if (send) onFire();
+  };
+
+  paint();
+  startLocalPhoneAlarm(tone);
+  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  $("#evac-send-now")?.addEventListener("click", () => finish(true));
+  $("[data-cancel-evac]")?.addEventListener("click", () => finish(false));
+
+  evacCountdownTimer = setInterval(() => {
+    remaining -= 1;
+    if (remaining <= 0) {
+      finish(true);
+      return;
+    }
+    const num = $("#evac-count-num");
+    const sec = $("#evac-count-sec");
+    const bar = box.querySelector(".evac-countdown-bar > span");
+    if (num) num.textContent = String(remaining);
+    if (sec) sec.textContent = String(remaining);
+    if (bar) bar.style.width = `${((TOTAL - remaining) / TOTAL) * 100}%`;
+    try {
+      navigator.vibrate?.(remaining <= 3 ? [120] : [60]);
+    } catch {
+      /* ignore */
+    }
+  }, 1000);
+}
+
 function renderEvacuate() {
   const actions = (state.config?.evacuateActions || [
     { id: "evacuate.code_red", label: "Code Red — Evacuate" },
@@ -1265,7 +1394,7 @@ function renderEvacuate() {
         <div>
           <h1 class="page-title">Emergency codes</h1>
           <p class="evac-meta">
-            ${playHint()} Hold Confirm to send. Plays on all campus speakers.
+            ${playHint()} Red / Blue: 10s phone alarm, then auto-send (or Send now / Cancel). All clear: hold to confirm.
           </p>
           <p class="evac-meta" style="margin-top:0.35rem">${escapeHtml(phaseHint)}</p>
         </div>
@@ -1297,32 +1426,23 @@ function renderEvacuate() {
       </div>
     </main>`;
 
+  stopLocalPhoneAlarm();
+
   document.querySelectorAll("[data-arm-evac]").forEach((btn) => {
     btn.addEventListener("click", () => {
       if (btn.disabled || !codesOpen) return;
       const id = btn.dataset.armEvac;
       const label = btn.dataset.label || id;
       const tone = btn.dataset.tone || evacCodeTone(id);
-      $("#evac-confirm").innerHTML = `
-        <div class="confirm-box confirm-box--${tone} stack confirm-safe">
-          <button type="button" class="btn btn-ghost btn-block" data-cancel-evac>Cancel</button>
-          <p style="margin:0;text-align:center">Confirm <strong>${escapeHtml(label)}</strong> on campus AI speakers.</p>
-          <button type="button" class="btn btn-code-${tone} btn-block btn-hold" data-confirm-evac="${escapeHtml(id)}" aria-label="Hold to confirm">
-            <span class="btn-hold-fill"></span>
-            <span class="btn-hold-label">Hold to confirm</span>
-          </button>
-        </div>`;
-      wireHoldConfirm($("[data-confirm-evac]"), () => {
-        const loop = $("#evac-loop")?.checked;
-        $("#evac-confirm").innerHTML = "";
-        void playAction(id, $("#play-msg"), 0, loop).then(() => {
-          /* phase updates via API response / Ably */
-        });
+      startEvacArmCountdown({
+        actionId: id,
+        label,
+        tone,
+        onFire: () => {
+          const loop = $("#evac-loop")?.checked;
+          void playAction(id, $("#play-msg"), 0, loop);
+        },
       });
-      $("[data-cancel-evac]")?.addEventListener("click", () => {
-        $("#evac-confirm").innerHTML = "";
-      });
-      $("#evac-confirm")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     });
   });
 
