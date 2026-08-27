@@ -1,0 +1,14 @@
+{
+  "name": "arnold-alarm",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.1.3",
+  "scripts": {
+    "dev": "pnpm --filter @arnold-alarm/web dev",
+    "build": "pnpm --filter @arnold-alarm/web build",
+    "dev:gateway": "pnpm --filter @arnold-alarm/gateway dev",
+    "build:gateway": "pnpm --filter @arnold-alarm/gateway build",
+    "seed:pins": "pnpm --filter @arnold-alarm/web seed:pins",
+    "lint": "pnpm --filter @arnold-alarm/web lint"
+  }
+}
