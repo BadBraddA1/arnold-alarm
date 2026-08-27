@@ -9,10 +9,14 @@ import WebSocket from "ws";
 import { getProtectAuthHeaders, protectBase } from "./protect.js";
 
 export const FRAME_MS = (1024 / 24000) * 1000;
-export const ARM_MS = 400;
-export const LEAD_MS = 400;
-export const TAIL_MS = 300;
+export const ARM_MS = 700;
+export const LEAD_MS = 250;
+export const TAIL_MS = 400;
 export const SESSION_RECOVERY_MS = 7000;
+/** Gap of silence between stitched clips in one talkback session. */
+export const STITCH_GAP_MS = 450;
+/** After aborting a loop (e.g. Red → All clear), let speakers settle. */
+export const POST_STOP_SETTLE_MS = 900;
 
 export type PlaybackState = {
   active: boolean;
@@ -43,6 +47,80 @@ export function stopTalkback(): boolean {
   if (!abortController) return false;
   abortController.abort();
   return true;
+}
+
+/** Stop any active talkback and wait until sockets drain + speakers settle. */
+export async function stopTalkbackAndWait(
+  settleMs = POST_STOP_SETTLE_MS,
+): Promise<void> {
+  const prior = playbackPromise;
+  stopTalkback();
+  if (prior) {
+    try {
+      await prior;
+    } catch {
+      /* aborted */
+    }
+  }
+  if (settleMs > 0) await sleep(settleMs);
+}
+
+export async function encodeSilenceAdts(ms: number): Promise<Buffer[]> {
+  const sec = Math.max(0.05, Math.min(5, ms / 1000));
+  const argv = [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-f",
+    "lavfi",
+    "-i",
+    `anullsrc=r=24000:cl=mono`,
+    "-t",
+    String(sec),
+    "-c:a",
+    "aac",
+    "-profile:a",
+    "aac_low",
+    "-ar",
+    "24000",
+    "-ac",
+    "1",
+    "-b:a",
+    "48k",
+    "-f",
+    "adts",
+    "pipe:1",
+  ];
+  const ff = spawn("ffmpeg", argv, { stdio: ["ignore", "pipe", "pipe"] });
+  const chunks: Buffer[] = [];
+  let stderr = "";
+  ff.stdout.on("data", (c: Buffer) => chunks.push(c));
+  ff.stderr.on("data", (d) => (stderr += String(d)));
+  const code = await new Promise<number>((res) =>
+    ff.on("close", (c) => res(c ?? -1)),
+  );
+  if (code !== 0) {
+    throw new Error(`ffmpeg silence failed: ${stderr.slice(0, 300)}`);
+  }
+  return splitAdts(Buffer.concat(chunks));
+}
+
+/** Encode one or more files into a single ADTS frame list (optional silence gaps). */
+export async function encodeAdtsFiles(
+  filePaths: string[],
+  gapMs = STITCH_GAP_MS,
+): Promise<Buffer[]> {
+  if (!filePaths.length) throw new Error("No audio files to encode");
+  if (filePaths.length === 1) return encodeAdts(filePaths[0]);
+
+  const gap = gapMs > 0 ? await encodeSilenceAdts(gapMs) : [];
+  const frames: Buffer[] = [];
+  for (let i = 0; i < filePaths.length; i++) {
+    if (i > 0 && gap.length) frames.push(...gap);
+    frames.push(...(await encodeAdts(filePaths[i])));
+  }
+  if (!frames.length) throw new Error("No AAC frames from stitched audio");
+  return frames;
 }
 
 /** Split an AAC-ADTS bitstream into individual frames. */
@@ -184,39 +262,59 @@ async function streamFrames(
 }
 
 async function runTalkbackSession(input: {
-  filePath: string;
+  filePaths: string[];
+  gapMs?: number;
   speakerIds: string[];
   loop: boolean;
-  repeat: number;
   signal: AbortSignal;
 }): Promise<void> {
   const { cookie } = await getProtectAuthHeaders();
-  const frames = await encodeAdts(input.filePath);
 
-  let playsLeft = input.loop ? Number.POSITIVE_INFINITY : Math.max(1, input.repeat);
-  while (playsLeft > 0 && !input.signal.aborted) {
-    const sockets = await openTalkbackSockets(
-      input.speakerIds,
-      cookie,
-      input.signal,
-    );
-    if (!sockets.length) return;
-
-    try {
-      await streamFrames(frames, sockets, input.signal);
-    } finally {
-      for (const ws of sockets) {
-        try {
-          ws.close();
-        } catch {
-          /* ignore */
+  if (input.loop) {
+    const frames = await encodeAdts(input.filePaths[0]);
+    while (!input.signal.aborted) {
+      const sockets = await openTalkbackSockets(
+        input.speakerIds,
+        cookie,
+        input.signal,
+      );
+      if (!sockets.length) return;
+      try {
+        await streamFrames(frames, sockets, input.signal);
+      } finally {
+        for (const ws of sockets) {
+          try {
+            ws.close();
+          } catch {
+            /* ignore */
+          }
         }
       }
+      if (!input.signal.aborted) await sleep(SESSION_RECOVERY_MS);
     }
+    return;
+  }
 
-    playsLeft = input.loop ? playsLeft : playsLeft - 1;
-    if (playsLeft > 0 && !input.signal.aborted) {
-      await sleep(SESSION_RECOVERY_MS);
+  // One socket session for the full stitch (tone + clip, or clip × N).
+  const frames = await encodeAdtsFiles(
+    input.filePaths,
+    input.gapMs ?? STITCH_GAP_MS,
+  );
+  const sockets = await openTalkbackSockets(
+    input.speakerIds,
+    cookie,
+    input.signal,
+  );
+  if (!sockets.length) return;
+  try {
+    await streamFrames(frames, sockets, input.signal);
+  } finally {
+    for (const ws of sockets) {
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
     }
   }
 }
@@ -359,10 +457,13 @@ function resolveAudioFile(file: string): string {
 
 export async function startTalkback(input: {
   actionId: string;
-  file: string;
+  file?: string;
+  /** Multiple files played as one continuous talkback (preferred for tone→clip). */
+  files?: string[];
   speakerIds: string[];
   loop?: boolean;
   repeat?: number;
+  gapMs?: number;
   /** Wait until the clip finishes (sequences, PA preamble). Default: return after arm. */
   awaitDone?: boolean;
 }): Promise<void> {
@@ -373,12 +474,24 @@ export async function startTalkback(input: {
     } catch {
       /* prior session aborted */
     }
+    await sleep(POST_STOP_SETTLE_MS);
   }
 
-  const filePath = resolveAudioFile(input.file);
-  await readFile(filePath);
+  const bases = (input.files?.length ? input.files : input.file ? [input.file] : [])
+    .map((f) => resolveAudioFile(f));
+  if (!bases.length) throw new Error("talkback file(s) required");
+  for (const fp of bases) await readFile(fp);
 
   const repeat = input.loop ? 1 : Math.max(1, input.repeat ?? 1);
+  const filePaths: string[] = [];
+  if (input.loop) {
+    filePaths.push(bases[0]);
+  } else {
+    for (let r = 0; r < repeat; r++) {
+      for (const fp of bases) filePaths.push(fp);
+    }
+  }
+
   const controller = new AbortController();
   abortController = controller;
   state.active = true;
@@ -388,10 +501,10 @@ export async function startTalkback(input: {
   state.startedAt = Date.now();
 
   playbackPromise = runTalkbackSession({
-    filePath,
+    filePaths,
+    gapMs: input.gapMs,
     speakerIds: input.speakerIds,
     loop: Boolean(input.loop),
-    repeat,
     signal: controller.signal,
   })
     .catch((err) => {

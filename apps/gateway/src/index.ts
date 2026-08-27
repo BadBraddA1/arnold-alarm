@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { jwtVerify } from "jose";
 import { z } from "zod";
 import { triggerAction, checkProtectHealth, type ActionMap } from "./protect.js";
-import { getPlaybackState, stopTalkback } from "./talkback.js";
+import { getPlaybackState, stopTalkback, stopTalkbackAndWait } from "./talkback.js";
 import { getPaStatus, startPaAudioSocket } from "./pa-sip.js";
 
 const PORT = Number(process.env.PORT || 8787);
@@ -70,12 +70,12 @@ async function runAction(
   options: { loop?: boolean; repeat?: number } = {},
 ) {
   if (actionId === "__all_clear__") {
-    stopTalkback();
+    await stopTalkbackAndWait();
     const def = actions["evacuate.code_green"];
     if (!def) {
       throw Object.assign(new Error("All clear action not configured"), { status: 500 });
     }
-    // Prefer sequence (start tone → Code Green ×2). Fall back to tone + green.
+    // Sequence stitches start tone + Code Green ×2 in one talkback session.
     await triggerAction(def, { actionId: "evacuate.code_green" });
     return;
   }

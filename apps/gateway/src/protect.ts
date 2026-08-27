@@ -429,31 +429,60 @@ async function runSequence(
   options: PlayOptions = {},
 ): Promise<void> {
   const actionId = options.actionId || "sequence";
-  for (let i = 0; i < steps.length; i++) {
+  let i = 0;
+  while (i < steps.length) {
     const step = steps[i];
     if (step.kind === "wait") {
       const ms = Math.max(0, Math.min(120_000, Number(step.ms) || 0));
       if (ms > 0) await new Promise((r) => setTimeout(r, ms));
+      i += 1;
       continue;
     }
     if (step.kind === "talkback") {
-      const { startTalkback } = await import("./talkback.js");
+      // Coalesce consecutive talkback steps on the same speakers into one
+      // continuous stream (fixes clipped Code Green / TEST ACOC after start tone).
+      const { startTalkback, STITCH_GAP_MS } = await import("./talkback.js");
+      const speakerKey = step.speakerIds.join(",");
+      const files: string[] = [];
+      let gapMs = STITCH_GAP_MS;
+      let j = i;
+      while (
+        j < steps.length &&
+        steps[j].kind === "talkback" &&
+        (steps[j] as Extract<SequenceStep, { kind: "talkback" }>).speakerIds.join(
+          ",",
+        ) === speakerKey
+      ) {
+        const tb = steps[j] as Extract<SequenceStep, { kind: "talkback" }>;
+        const times = Math.max(1, tb.repeat ?? 1);
+        for (let r = 0; r < times; r++) files.push(tb.file);
+        j += 1;
+        if (j < steps.length && steps[j].kind === "wait") {
+          const w = steps[j] as Extract<SequenceStep, { kind: "wait" }>;
+          gapMs = Math.max(gapMs, Math.min(5_000, Number(w.ms) || 0));
+          j += 1;
+          continue;
+        }
+      }
       await startTalkback({
         actionId: `${actionId}.step${i}`,
-        file: step.file,
+        files,
         speakerIds: step.speakerIds,
-        repeat: step.repeat,
+        gapMs,
         awaitDone: true,
       });
+      i = j;
       continue;
     }
     if (step.kind === "ringtone") {
       await playRingtone(step.ringtoneId, step.repeat ?? 1);
+      i += 1;
       continue;
     }
     if (step.kind === "testSound") {
       await triggerTestSound(step.speakerIds);
     }
+    i += 1;
   }
 }
 
