@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install Asterisk + wire extension 888 → arnold-alarm AudioSocket (convenience PA).
+# Install Asterisk + wire extension 1010 → arnold-alarm AudioSocket (convenience PA).
 # NOT for emergency use.
 set -euo pipefail
 
@@ -11,7 +11,7 @@ TALK_IP="${TALK_CONSOLE_IP:-}"
 SOFT_PASS="${PA_SOFTPHONE_PASSWORD:-$(openssl rand -hex 4)}"
 
 echo "==> Arnold Alarm convenience PA installer"
-echo "    Extension 888 → AudioSocket 127.0.0.1:9092 → Protect talkback"
+echo "    Extension 1010 → AudioSocket 127.0.0.1:9092 → Protect talkback"
 echo "    This is NOT an emergency path."
 
 if [[ "$(id -u)" -eq 0 ]]; then
@@ -76,7 +76,7 @@ sudo systemctl restart arnold-alarm-gateway 2>/dev/null || \
 
 echo ""
 echo "Done."
-echo "  Softphone test: register SIP 100 / pass ${SOFT_PASS} @ $(hostname -I | awk '{print $1}') then dial 888"
+echo "  Softphone test: register SIP 100 / pass ${SOFT_PASS} @ $(hostname -I | awk '{print $1}') then dial 1010"
 echo "  UniFi Talk: add third-party SIP provider → this Pi IP:5060 (see README)"
 echo "  Health: curl -s http://127.0.0.1:8787/health | jq .pa"
 echo ""
