@@ -18,7 +18,7 @@ Pi    → UniFi Protect NVR → AI speakers
 
 - Site works on cellular. **Play** needs either church Wi‑Fi (direct to Pi) or a PIN with **remote** scope (Worker queue → Pi poll).
 - PINs live in **Cloudflare D1** (hashed). Sessions expire after **45 minutes** (or **30 minutes idle**) so a left-unlocked phone does not stay armed.
-- **Arm / disarm:** Admins can disarm the speaker system from Home. Staff can still send bells/codes while unarmed — commands are **held** (audit log) and speakers stay silent until an admin arms again. Default is armed. **Arm state + Home activity sync live across phones** via Ably (12s poll fallback if Ably is down).
+- **Arm / disarm:** Admins arm/disarm and run speaker check from the <strong>Admin</strong> panel. Staff can still send bells/codes while unarmed — commands are **held** (audit log) and speakers stay silent until an admin arms again. Default is armed. **Arm state + Home activity sync live across phones** via Ably (12s poll fallback if Ably is down).
 - Status distinguishes **queued on campus** vs **playing now**, and **Pi offline** vs **Protect unreachable**.
 - Home shows **last play** plus recent activity (Central time). PINs with only **bells** or only **evacuate** skip Home and open that panel directly (no activity log).
 
@@ -133,7 +133,7 @@ Sequence example (second bell):
 
 - **Code Red** / **Code Blue:** tap starts a **10s phone alarm** (campus silent). **Send now**, **Cancel**, or auto-send at 0. Then loop until All clear. Only one code at a time; All clear grayed until a code is active.
 - **Stop & All clear** is green (Code Green ×2 only — not a direct Code Green play button).
-- **Speaker check** (start tone + TEST ACOC) lives on **Home** only — not on the Emergency page, so codes stay clear of test mode.
+- **Admin** panel: arm/disarm, speaker check (start tone + TEST ACOC), and staff PIN management.
 
 ## Ops / safety notes
 

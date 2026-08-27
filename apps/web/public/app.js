@@ -202,6 +202,8 @@ function applyArmedState(armed, meta = {}) {
     if (meta.message) {
       state.message = { kind: "ok", text: meta.message };
     }
+  } else if (state.route === "admin" && prev !== next) {
+    void renderAdmin();
   } else if (meta.by && prev !== next) {
     // Soft notice on other panels
     const row = document.querySelector(".status-row");
@@ -486,44 +488,15 @@ function renderHome() {
           <p class="muted" style="margin:0">Access is limited to what your PIN allows.</p>
         </div>
         ${
-          canAdmin
-            ? `<div class="card stack arm-card" style="gap:0.65rem;padding:1rem 1.1rem">
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap">
-                  <div>
-                    <p style="margin:0;font-weight:600">Speaker system</p>
-                    <p class="muted" style="margin:0.25rem 0 0;font-size:0.85rem">
-                      ${
-                        armed
-                          ? "Armed — commands play on campus speakers."
-                          : "Unarmed — staff can still send commands; they are logged but speakers stay silent."
-                      }
-                    </p>
-                  </div>
-                  <button type="button" class="btn ${armed ? "btn-ghost" : "btn-primary"}" id="toggle-armed" style="min-height:2.5rem;padding:0.4rem 1rem">
-                    ${armed ? "Disarm" : "Arm system"}
-                  </button>
-                </div>
-                <div id="arm-msg"></div>
-              </div>`
-            : !armed
-              ? `<div class="error-banner" style="margin:0">System is <strong>unarmed</strong> — you can still send commands; speakers will not play until an admin arms the system.</div>`
-              : ""
-        }
-        <div id="last-play" class="last-play muted">Loading last play…</div>
-        ${
-          canBells || canEvac
-            ? `<div class="card stack" style="gap:0.55rem;padding:1rem 1.1rem">
-                <p style="margin:0;font-weight:600">Speaker check</p>
-                <p class="muted" style="margin:0;font-size:0.85rem">Plays the start tone, then <strong>TEST ACOC</strong> on every campus speaker while you walk the building.</p>
-                <button type="button" class="btn btn-ghost btn-block" id="home-test-speakers" style="min-height:2.5rem">Speaker check — all speakers</button>
-                <div id="home-test-msg"></div>
-              </div>`
+          !canAdmin && !armed
+            ? `<div class="error-banner" style="margin:0">System is <strong>unarmed</strong> — you can still send commands; speakers will not play until an admin arms the system.</div>`
             : ""
         }
+        <div id="last-play" class="last-play muted">Loading last play…</div>
         <div class="tile-grid">
           ${canBells ? `<button type="button" class="tile" data-go="bells"><h2>Class bells</h2><p>First and second bell — play now or schedule to building time.</p></button>` : ""}
-          ${canEvac ? `<button type="button" class="tile" data-go="evacuate"><h2>Emergency codes</h2><p>Code Red, Blue, and Green announcements.</p></button>` : ""}
-          ${canAdmin ? `<button type="button" class="tile" data-go="admin"><h2>PIN admin</h2><p>Add or revoke staff PINs.</p></button>` : ""}
+          ${canEvac ? `<button type="button" class="tile" data-go="evacuate"><h2>Emergency codes</h2><p>Code Red, Blue, and All clear.</p></button>` : ""}
+          ${canAdmin ? `<button type="button" class="tile" data-go="admin"><h2>Admin</h2><p>Arm/disarm, speaker check, and staff PINs.</p></button>` : ""}
         </div>
         <div class="stack" style="gap:0.5rem">
           <p style="margin:0;font-weight:600">Recent activity</p>
@@ -534,10 +507,6 @@ function renderHome() {
       </div>
     </main>`;
   void loadAudit();
-  $("#toggle-armed")?.addEventListener("click", () => void toggleArmed());
-  $("#home-test-speakers")?.addEventListener("click", () => {
-    void playAction("test.speakers", $("#home-test-msg"));
-  });
 }
 
 async function toggleArmed() {
@@ -557,7 +526,8 @@ async function toggleArmed() {
     message: data.message || (data.armed ? "System armed." : "System unarmed."),
   });
   state.message = { kind: "ok", text: data.message || (data.armed ? "System armed." : "System unarmed.") };
-  renderHome();
+  if (state.route === "admin") void renderAdmin();
+  else if (state.route === "home") renderHome();
 }
 
 async function loadAudit() {
@@ -1471,14 +1441,43 @@ function renderEvacuate() {
 async function renderAdmin() {
   const { res, data } = await api("/api/admin/pins");
   const pins = res.ok ? data.pins || [] : [];
+  const armed = state.config?.armed !== false;
   app.innerHTML = `
     <main class="app-shell">
       ${header(state.session.label)}
       ${backToHomeLink()}
       <div class="stack">
         <div>
-          <h1 class="page-title">PIN admin</h1>
-          <p class="muted" style="margin:0">Hashed PINs in Cloudflare D1. Grant <strong>Remote play</strong> only to trusted staff — it can ring speakers from anywhere. Sessions auto-end after 45 minutes (30 min idle).</p>
+          <h1 class="page-title">Admin</h1>
+          <p class="muted" style="margin:0">Arm the system, run speaker check, and manage staff PINs.</p>
+        </div>
+        <div class="card stack arm-card" style="gap:0.65rem;padding:1rem 1.1rem">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap">
+            <div>
+              <p style="margin:0;font-weight:600">Speaker system</p>
+              <p class="muted" style="margin:0.25rem 0 0;font-size:0.85rem">
+                ${
+                  armed
+                    ? "Armed — commands play on campus speakers."
+                    : "Unarmed — staff can still send commands; they are logged but speakers stay silent."
+                }
+              </p>
+            </div>
+            <button type="button" class="btn ${armed ? "btn-ghost" : "btn-primary"}" id="toggle-armed" style="min-height:2.5rem;padding:0.4rem 1rem">
+              ${armed ? "Disarm" : "Arm system"}
+            </button>
+          </div>
+          <div id="arm-msg"></div>
+        </div>
+        <div class="card stack" style="gap:0.55rem;padding:1rem 1.1rem">
+          <p style="margin:0;font-weight:600">Speaker check</p>
+          <p class="muted" style="margin:0;font-size:0.85rem">Start tone, then <strong>TEST ACOC</strong> on every campus speaker while you walk the building.</p>
+          <button type="button" class="btn btn-ghost btn-block" id="admin-test-speakers" style="min-height:2.5rem">Speaker check — all speakers</button>
+          <div id="admin-test-msg"></div>
+        </div>
+        <div>
+          <h2 class="page-title" style="font-size:1.15rem;margin:0.5rem 0 0.35rem">Staff PINs</h2>
+          <p class="muted" style="margin:0">Hashed in Cloudflare D1. Grant <strong>Remote play</strong> only to trusted staff. Sessions end after 45 minutes (30 min idle).</p>
         </div>
         <form class="card stack" id="pin-form">
           <div class="field"><label>Label</label><input name="label" required placeholder="Office desk" /></div>
@@ -1513,8 +1512,14 @@ async function renderAdmin() {
             </tbody>
           </table>
         </div>
+        ${banner()}
       </div>
     </main>`;
+
+  $("#toggle-armed")?.addEventListener("click", () => void toggleArmed());
+  $("#admin-test-speakers")?.addEventListener("click", () => {
+    void playAction("test.speakers", $("#admin-test-msg"));
+  });
 
   $("#pin-form")?.addEventListener("submit", async (e) => {
     e.preventDefault();
