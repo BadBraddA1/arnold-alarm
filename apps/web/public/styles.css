@@ -455,6 +455,29 @@ button, input { font: inherit; }
   filter: brightness(1.05);
 }
 
+
+.evac-countdown-num {
+  font-size: clamp(3rem, 14vw, 4.5rem);
+  font-weight: 800;
+  line-height: 1;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+}
+.evac-countdown-bar {
+  height: 0.45rem;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--line) 80%, transparent);
+  overflow: hidden;
+}
+.evac-countdown-bar > span {
+  display: block;
+  height: 100%;
+  transition: width 0.2s linear;
+}
+.confirm-box--red .evac-countdown-bar > span { background: var(--code-red); }
+.confirm-box--blue .evac-countdown-bar > span { background: var(--code-blue); }
+
 ::selection {
   background: color-mix(in oklab, var(--accent) 45%, transparent);
   color: var(--ink);
