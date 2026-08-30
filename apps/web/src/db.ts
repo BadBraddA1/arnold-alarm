@@ -503,6 +503,53 @@ export async function getSpeakersSnapshot(env: Env): Promise<{
   }
 }
 
+export type TestNotifyExtReportRow = {
+  ext: string;
+  label: string;
+  status: string;
+  error?: string;
+  digit?: string | null;
+  ringStartedAt: number;
+  answeredAt?: number;
+  finishedAt?: number;
+};
+
+export type TestNotifyReportRow = {
+  id: string;
+  state: "ringing" | "complete";
+  startedAt: number;
+  finishedAt?: number;
+  requestedBy?: string;
+  playId?: string;
+  notifyOnly: boolean;
+  delayMinutes: number;
+  delayed: boolean;
+  delayedBy: string[];
+  hornsAt?: number | null;
+  extensions: TestNotifyExtReportRow[];
+};
+
+export async function setTestNotifyReport(env: Env, report: TestNotifyReportRow) {
+  await env.DB.prepare(
+    `INSERT INTO system_settings (key, value) VALUES ('test_notify_report', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  )
+    .bind(JSON.stringify(report))
+    .run();
+}
+
+export async function getTestNotifyReport(env: Env): Promise<TestNotifyReportRow | null> {
+  const row = await env.DB.prepare(
+    `SELECT value FROM system_settings WHERE key = 'test_notify_report'`,
+  ).first<{ value: string }>();
+  if (!row?.value) return null;
+  try {
+    return JSON.parse(row.value) as TestNotifyReportRow;
+  } catch {
+    return null;
+  }
+}
+
 /** Map evacuate action ids to phase transitions / gates. */
 export function evacPhaseForAction(actionId: string): EvacPhase | null {
   if (actionId === "evacuate.code_red" || actionId === "evacuate.main") return "red";

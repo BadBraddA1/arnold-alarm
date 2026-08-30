@@ -13,7 +13,7 @@ export type CloudJob = {
 export type CloudJobHandlers = {
   runAction: (
     actionId: string,
-    options?: { loop?: boolean },
+    options?: { loop?: boolean; requestedBy?: string; playId?: string },
   ) => Promise<void>;
   scheduleJob: (actionId: string, delayMs: number, id?: string) => {
     id: string;
@@ -53,7 +53,11 @@ export async function handleCloudJob(
       await handlers.ackCloud(job.id, true);
       return;
     }
-    await handlers.runAction(job.actionId, { loop: job.loop });
+    await handlers.runAction(job.actionId, {
+      loop: job.loop,
+      requestedBy: job.label,
+      playId: job.id,
+    });
     console.log(`[job] ok ${job.id} ${job.actionId}`);
     await handlers.ackCloud(job.id, true);
   } catch (err) {

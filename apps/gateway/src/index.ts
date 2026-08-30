@@ -19,6 +19,7 @@ import {
 } from "./pa-sip.js";
 import { handleCloudJob } from "./cloud-jobs.js";
 import { startAblyPush } from "./ably-push.js";
+import { getLatestTestNotifyReport } from "./test-notify.js";
 
 const PORT = Number(process.env.PORT || 8787);
 const PLAY_JWT_SECRET = process.env.PLAY_JWT_SECRET || "";
@@ -95,7 +96,13 @@ async function verifyPlayToken(token: string, actionId: string) {
 
 async function runAction(
   actionId: string,
-  options: { loop?: boolean; repeat?: number; skipTestNotify?: boolean } = {},
+  options: {
+    loop?: boolean;
+    repeat?: number;
+    skipTestNotify?: boolean;
+    requestedBy?: string;
+    playId?: string;
+  } = {},
 ) {
   if (actionId === "__all_clear__") {
     await withActionVolume("evacuate.code_green", async () => {
@@ -151,10 +158,16 @@ async function runAction(
   if (actionId === "test.speakers" && !options.skipTestNotify) {
     try {
       const { notifyDeskPhonesOfTest } = await import("./pa-sip.js");
-      const result = await notifyDeskPhonesOfTest();
-      if (result.called.length) {
+      const result = await notifyDeskPhonesOfTest({
+        requestedBy: options.requestedBy,
+        playId: options.playId,
+      });
+      if (result.extensions.length) {
+        const summary = result.extensions
+          .map((e) => `${e.ext}:${e.status}`)
+          .join(", ");
         console.log(
-          `[play] test notify ok=${result.ok.join(",") || "none"} failed=${result.failed.map((f) => f.ext).join(",") || "none"}${result.delayed ? ` delay=${result.delayMinutes}m by ${result.delayedBy.join(",")}` : ""}`,
+          `[play] test notify ${result.state}${result.delayed ? ` delay=${result.delayMinutes}m` : ""} — ${summary}`,
         );
       }
       if (result.delayed && result.delayMinutes > 0) {
@@ -376,7 +389,16 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
       protect,
       pa: getPaStatus(),
       testNotify: getTestNotifyStatus(),
+      testNotifyReport: getLatestTestNotifyReport(),
       now: Date.now(),
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/test-notify") {
+    sendJson(res, 200, {
+      config: getTestNotifyStatus(),
+      report: getLatestTestNotifyReport(),
     });
     return;
   }

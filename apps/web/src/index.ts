@@ -31,6 +31,9 @@ import {
   setVolumeSettings,
   setSpeakersSnapshot,
   getSpeakersSnapshot,
+  setTestNotifyReport,
+  getTestNotifyReport,
+  type TestNotifyReportRow,
   updateAuditStatus,
   updatePinScopes,
 } from "./db";
@@ -937,6 +940,22 @@ app.post("/api/gateway/telemetry", async (c) => {
   return c.json({ ok: true });
 });
 
+app.post("/api/gateway/test-notify", async (c) => {
+  if (!gatewayAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
+  await touchGatewayHeartbeat(c.env, "test-notify");
+  const body = (await c.req.json().catch(() => null)) as TestNotifyReportRow | null;
+  if (!body?.id || !Array.isArray(body.extensions)) {
+    return c.json({ error: "invalid report" }, 400);
+  }
+  await setTestNotifyReport(c.env, body);
+  await publishSystemEvent(c.env, "test-notify", {
+    id: body.id,
+    state: body.state,
+    at: body.finishedAt || body.startedAt || Date.now(),
+  });
+  return c.json({ ok: true });
+});
+
 app.post("/api/gateway/ack", async (c) => {
   if (!gatewayAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
   await touchGatewayHeartbeat(c.env, "ack");
@@ -1182,6 +1201,17 @@ app.get("/api/admin/speakers", async (c) => {
     volumes,
     gateway: { online: gatewayOnline, ageSec: gatewayAgeSec },
   });
+});
+
+/** Admin — speaker check desk notify live report from campus gateway. */
+app.get("/api/admin/test-notify", async (c) => {
+  const session = c.get("session");
+  if (!session?.scopes.includes("admin")) return c.json({ error: "Forbidden" }, 403);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
+  const report = await getTestNotifyReport(c.env);
+  return c.json({ report });
 });
 
 /** Admin desktop console — one round trip for overview dashboard. */

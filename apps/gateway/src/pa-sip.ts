@@ -25,6 +25,12 @@ import {
   startTalkRegistration,
   stopTalkRegistration,
 } from "./talk-register.js";
+import {
+  createTestNotifyReport,
+  patchExtReport,
+  publishTestNotifyReport,
+  type TestNotifyReport,
+} from "./test-notify.js";
 import { playLocalAction } from "./play-local.js";
 
 const require = createRequire(import.meta.url);
@@ -310,6 +316,34 @@ function parseTestNotifyExts(): string[] {
   ];
 }
 
+function parseTestNotifyLabels(): Record<string, string> {
+  const raw = (process.env.TEST_NOTIFY_LABELS || "").trim();
+  const labels: Record<string, string> = {};
+  if (!raw) return labels;
+  for (const part of raw.split(/[,;]+/)) {
+    const seg = part.trim();
+    if (!seg) continue;
+    const colon = seg.indexOf(":");
+    if (colon > 0) {
+      const ext = seg.slice(0, colon).trim();
+      const label = seg.slice(colon + 1).trim();
+      if (ext && label) labels[ext] = label;
+    }
+  }
+  return labels;
+}
+
+export function getTestNotifyConfig() {
+  const exts = parseTestNotifyExts();
+  const labels = parseTestNotifyLabels();
+  return {
+    exts: exts.map((ext) => ({ ext, label: labels[ext] || ext })),
+    delayMinutes: testNotifyDelayMinutes(),
+    dtmfMs: testNotifyDtmfMs(),
+    notifyOnly: isSpeakerCheckNotifyOnly(),
+  };
+}
+
 /** When true, speaker check rings desk phones only — campus horns stay silent. */
 export function isSpeakerCheckNotifyOnly(): boolean {
   const v = (process.env.SPEAKER_CHECK_NOTIFY_ONLY || "").trim().toLowerCase();
@@ -317,12 +351,7 @@ export function isSpeakerCheckNotifyOnly(): boolean {
 }
 
 export function getTestNotifyStatus() {
-  return {
-    exts: parseTestNotifyExts(),
-    notifyOnly: isSpeakerCheckNotifyOnly(),
-    delayMinutes: testNotifyDelayMinutes(),
-    dtmfMs: testNotifyDtmfMs(),
-  };
+  return getTestNotifyConfig();
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -330,30 +359,57 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /**
  * Before speaker check: ring configured desk phones and play a stand-by prompt.
  * Press 0 during/after the prompt to delay campus horns (not another desk ring).
- * Failures are logged; speaker check still proceeds unless delayed.
  */
-export async function notifyDeskPhonesOfTest(): Promise<{
-  called: string[];
-  ok: string[];
-  failed: Array<{ ext: string; error: string }>;
-  delayed: boolean;
-  delayMinutes: number;
-  delayedBy: string[];
-}> {
+export async function notifyDeskPhonesOfTest(meta?: {
+  requestedBy?: string;
+  playId?: string;
+  hornsAt?: number | null;
+}): Promise<TestNotifyReport> {
   const exts = parseTestNotifyExts();
+  const labels = parseTestNotifyLabels();
+  const emptyReport = (): TestNotifyReport => ({
+    id: crypto.randomUUID(),
+    state: "complete",
+    startedAt: Date.now(),
+    finishedAt: Date.now(),
+    requestedBy: meta?.requestedBy,
+    playId: meta?.playId,
+    notifyOnly: isSpeakerCheckNotifyOnly(),
+    delayMinutes: 0,
+    delayed: false,
+    delayedBy: [],
+    hornsAt: meta?.hornsAt ?? null,
+    extensions: [],
+  });
+
   if (!exts.length) {
-    return { called: [], ok: [], failed: [], delayed: false, delayMinutes: 0, delayedBy: [] };
+    return emptyReport();
   }
+
+  const report = createTestNotifyReport({
+    exts,
+    labels,
+    requestedBy: meta?.requestedBy,
+    playId: meta?.playId,
+    notifyOnly: isSpeakerCheckNotifyOnly(),
+    delayMinutes: testNotifyDelayMinutes(),
+  });
+  report.hornsAt = meta?.hornsAt ?? null;
+  await publishTestNotifyReport(report);
+
   if (!stack) {
     console.warn("[test-notify] SIP stack not ready — skipping desk phone calls");
-    return {
-      called: exts,
-      ok: [],
-      failed: exts.map((ext) => ({ ext, error: "sip_stack_unavailable" })),
-      delayed: false,
-      delayMinutes: 0,
-      delayedBy: [],
-    };
+    for (const ext of exts) {
+      patchExtReport(report, ext, {
+        status: "failed",
+        error: "sip_stack_unavailable",
+        finishedAt: Date.now(),
+      });
+    }
+    report.state = "complete";
+    report.finishedAt = Date.now();
+    await publishTestNotifyReport(report);
+    return report;
   }
 
   const talkHost = (process.env.PA_TALK_HOST || "192.168.1.1").trim();
@@ -363,9 +419,6 @@ export async function notifyDeskPhonesOfTest(): Promise<{
   const dtmfMs = testNotifyDtmfMs();
   const pcm = loadTestNotifyPcm();
   const delayAck = loadTestDelayAckPcm();
-  const ok: string[] = [];
-  const failed: Array<{ ext: string; error: string }> = [];
-  const delayedBy: string[] = [];
 
   console.log(`[test-notify] calling ${exts.join(", ")} via ${talkHost}`);
 
@@ -374,6 +427,9 @@ export async function notifyDeskPhonesOfTest(): Promise<{
       const uri = `sip:${ext}@${talkHost}`;
       let dialog: SipDialog | null = null;
       try {
+        patchExtReport(report, ext, { status: "ringing", ringStartedAt: Date.now() });
+        await publishTestNotifyReport(report);
+
         const callP = stack!.call(uri, {
           fromUri: talkUser ? `sip:${talkUser}@${talkHost}` : undefined,
           payloadType: 0,
@@ -388,6 +444,15 @@ export async function notifyDeskPhonesOfTest(): Promise<{
           }),
         ]);
 
+        patchExtReport(report, ext, {
+          status: "answered",
+          answeredAt: Date.now(),
+        });
+        await publishTestNotifyReport(report);
+
+        patchExtReport(report, ext, { status: "playing_prompt" });
+        await publishTestNotifyReport(report);
+
         let digit: string | null = null;
         if (pcm.length) {
           digit = await playPromptUntilDigit(dialog, pcm, dtmfMs);
@@ -397,27 +462,38 @@ export async function notifyDeskPhonesOfTest(): Promise<{
         }
 
         if (digit === "0") {
-          delayedBy.push(ext);
+          report.delayedBy.push(ext);
+          patchExtReport(report, ext, { status: "delayed", digit: "0" });
           if (delayAck.length) {
             await playToPhone(dialog, delayAck);
-          } else {
-            console.log(`[test-notify] ${ext} pressed 0 — delay ack clip missing`);
           }
           console.log(`[test-notify] ${ext} requested delay`);
+        } else {
+          patchExtReport(report, ext, {
+            status: "acknowledged",
+            digit: digit || null,
+          });
         }
 
         await hangUpWithGoodbye(dialog);
-        ok.push(ext);
-        console.log(`[test-notify] ${ext} ok`);
+        patchExtReport(report, ext, { finishedAt: Date.now() });
+        await publishTestNotifyReport(report);
+        console.log(`[test-notify] ${ext} ${digit === "0" ? "delayed" : "acknowledged"}`);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        failed.push({ ext, error: message });
+        const noAnswer = /no answer/i.test(message);
+        patchExtReport(report, ext, {
+          status: noAnswer ? "no_answer" : "failed",
+          error: message,
+          finishedAt: Date.now(),
+        });
         console.warn(`[test-notify] ${ext} failed:`, message);
         try {
           if (dialog) await hangUpWithGoodbye(dialog);
         } catch {
           /* ignore */
         }
+        await publishTestNotifyReport(report);
       }
     }),
   );
@@ -425,15 +501,18 @@ export async function notifyDeskPhonesOfTest(): Promise<{
   const settleMs = Math.max(0, Number(process.env.TEST_NOTIFY_SETTLE_MS || 1500));
   if (settleMs) await sleep(settleMs);
 
-  const delayed = delayedBy.length > 0;
-  const delayMinutes = delayed ? testNotifyDelayMinutes() : 0;
-  if (delayed) {
+  report.delayed = report.delayedBy.length > 0;
+  report.delayMinutes = report.delayed ? testNotifyDelayMinutes() : 0;
+  if (report.delayed) {
+    report.hornsAt = Date.now() + report.delayMinutes * 60_000;
     console.log(
-      `[test-notify] delay ${delayMinutes}m requested by ${delayedBy.join(", ")}`,
+      `[test-notify] delay ${report.delayMinutes}m requested by ${report.delayedBy.join(", ")}`,
     );
   }
-
-  return { called: exts, ok, failed, delayed, delayMinutes, delayedBy };
+  report.state = "complete";
+  report.finishedAt = Date.now();
+  await publishTestNotifyReport(report);
+  return report;
 }
 
 function ivrApiUrl(): string {

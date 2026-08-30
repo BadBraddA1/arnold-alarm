@@ -58,7 +58,7 @@ export async function playLocalAction(
   if (actionId === "test.speakers" && !options.skipTestNotify) {
     const { notifyDeskPhonesOfTest, isSpeakerCheckNotifyOnly } = await import("./pa-sip.js");
     try {
-      const result = await notifyDeskPhonesOfTest();
+      const result = await notifyDeskPhonesOfTest({ requestedBy: "campus IVR" });
       if (result.delayed && result.delayMinutes > 0) {
         if (isSpeakerCheckNotifyOnly()) {
           console.log("[play-local] speaker check delayed — notify-only, horns already skipped");

@@ -4,6 +4,7 @@ const app = $("#app");
 
 const NAV = [
   { id: "overview", label: "Overview", icon: "◫" },
+  { id: "test", label: "Speaker test", icon: "☎" },
   { id: "speakers", label: "Speakers", icon: "◎" },
   { id: "activity", label: "Activity", icon: "☰" },
   { id: "staff", label: "Staff PINs", icon: "✦" },
@@ -25,6 +26,7 @@ let state = {
   lastActivityAt: Date.now(),
   _speakersTimer: null,
   _pollTimer: null,
+  _testNotifyPoll: null,
 };
 
 let idleTimer = null;
@@ -179,6 +181,113 @@ function lastPlayEvent(events) {
   return (events || []).find((e) => !isSystemStatusEvent(e.actionId));
 }
 
+function testNotifyStatusLabel(status) {
+  const map = {
+    pending: "Waiting",
+    ringing: "Ringing…",
+    answered: "Answered",
+    playing_prompt: "Playing prompt",
+    delayed: "Pressed 0 — delay",
+    acknowledged: "Acknowledged",
+    no_answer: "No answer",
+    failed: "Failed",
+  };
+  return map[status] || status;
+}
+
+function testNotifyStatusClass(status) {
+  if (status === "delayed") return "held";
+  if (status === "acknowledged") return "ok";
+  if (status === "ringing" || status === "answered" || status === "playing_prompt") return "neutral";
+  if (status === "no_answer" || status === "failed") return "bad";
+  return "neutral";
+}
+
+function testNotifyDetail(ext) {
+  if (ext.digit === "0") return "Delay requested";
+  if (ext.status === "acknowledged") return "Heard prompt · goodbye";
+  if (ext.status === "delayed") return "Delay confirmed · goodbye";
+  if (ext.error) return ext.error;
+  return "—";
+}
+
+function renderTestNotifyBoard(report) {
+  if (!report?.extensions?.length) {
+    return `<p class="muted" style="margin:0">No desk notify run yet. Run speaker check to ring configured extensions.</p>`;
+  }
+  const when = formatCentral(new Date(report.finishedAt || report.startedAt).toISOString());
+  const live = report.state === "ringing";
+  let summary = live
+    ? "Live — desk phones ringing now."
+    : `Last run ${when}`;
+  if (report.requestedBy) summary += ` · ${report.requestedBy}`;
+  if (report.delayed && report.delayedBy?.length) {
+    const names = report.delayedBy.map((ext) => {
+      const row = report.extensions.find((e) => e.ext === ext);
+      return row ? `${row.label} (${ext})` : ext;
+    });
+    summary += ` · delay by ${names.join(", ")}`;
+  } else if (report.delayed) {
+    summary += ` · horns delayed ${report.delayMinutes}m`;
+  }
+  if (report.notifyOnly) summary += " · notify-only (horns skipped)";
+
+  return `
+    <p class="muted" style="margin:0 0 0.65rem">${escapeHtml(summary)}</p>
+    <div class="audit-table-wrap">
+      <table class="table">
+        <thead><tr><th>Ext</th><th>Desk phone</th><th>Status</th><th>Detail</th></tr></thead>
+        <tbody>${report.extensions
+          .map(
+            (e) => `<tr>
+              <td>${escapeHtml(e.ext)}</td>
+              <td>${escapeHtml(e.label)}</td>
+              <td><span class="status-pill ${testNotifyStatusClass(e.status)}">${escapeHtml(testNotifyStatusLabel(e.status))}</span></td>
+              <td class="muted">${escapeHtml(testNotifyDetail(e))}</td>
+            </tr>`,
+          )
+          .join("")}</tbody>
+      </table>
+    </div>`;
+}
+
+async function refreshTestNotifyPanel() {
+  const el = $("#test-notify-board");
+  if (!el) return;
+  const { res, data } = await api("/api/admin/test-notify");
+  if (!res.ok) {
+    el.innerHTML = `<p class="error-banner" style="margin:0">${escapeHtml(data.error || "Could not load desk notify status.")}</p>`;
+    return;
+  }
+  el.innerHTML = renderTestNotifyBoard(data.report);
+  if (data.report?.state === "ringing") armTestNotifyPoll();
+  else stopTestNotifyPoll();
+}
+
+function armTestNotifyPoll() {
+  if (state._testNotifyPoll) return;
+  state._testNotifyPoll = setInterval(() => void refreshTestNotifyPanel(), 1500);
+}
+
+function stopTestNotifyPoll() {
+  if (state._testNotifyPoll) {
+    clearInterval(state._testNotifyPoll);
+    state._testNotifyPoll = null;
+  }
+}
+
+async function runSpeakerCheck(msgEl) {
+  void refreshTestNotifyPanel();
+  armTestNotifyPoll();
+  try {
+    await playAction("test.speakers", msgEl);
+  } finally {
+    setTimeout(() => void refreshTestNotifyPanel(), 800);
+    setTimeout(() => void refreshTestNotifyPanel(), 4000);
+    setTimeout(() => stopTestNotifyPoll(), 90_000);
+  }
+}
+
 function evacPhaseLabel(phase) {
   if (phase === "red") return "Code Red active";
   if (phase === "blue") return "Code Blue active";
@@ -267,6 +376,11 @@ async function ensureLiveSync() {
     });
     channel.subscribe("activity", () => {
       if (state.section === "overview" || state.section === "activity") void refreshSectionData();
+    });
+    channel.subscribe("test-notify", () => {
+      if (state.section === "test" || state.section === "system" || state.section === "overview") {
+        void refreshTestNotifyPanel();
+      }
     });
   } catch (err) {
     console.warn("[desk] Ably unavailable", err);
@@ -580,7 +694,33 @@ function sectionOverviewHtml(data) {
         </div>
         <button type="button" class="btn btn-ghost btn-sm" data-section="activity">View all</button>
       </div>
-      <div id="overview-activity">${activityTable(data?.events, 8)}</div>
+        <div id="overview-activity">${activityTable(data?.events, 8)}</div>
+      </div>`;
+}
+
+function sectionTestHtml() {
+  return `
+    <div class="stack">
+      <div class="panel stack">
+        <div class="panel-head">
+          <div>
+            <h2>Run speaker check</h2>
+            <p>Rings configured desk phones first — press 0 on a phone to delay campus horns.</p>
+          </div>
+        </div>
+        <button type="button" class="btn btn-primary" id="speaker-check">Run speaker check</button>
+        <div id="check-msg"></div>
+      </div>
+      <div class="panel stack">
+        <div class="panel-head">
+          <div>
+            <h2>Desk phone notify</h2>
+            <p>Live while ringing — who answered, acknowledged, delayed, or missed.</p>
+          </div>
+          <button type="button" class="btn btn-ghost btn-sm" id="refresh-test-notify">Refresh</button>
+        </div>
+        <div id="test-notify-board"><p class="muted" style="margin:0">Loading…</p></div>
+      </div>
     </div>`;
 }
 
@@ -748,8 +888,7 @@ function sectionSystemHtml() {
       </div>
       <div class="panel stack">
         <div class="panel-head"><div><h2>Speaker check</h2><p>Desk notify → start tone → TEST ACOC on all horns</p></div></div>
-        <button type="button" class="btn btn-ghost" id="speaker-check">Run speaker check</button>
-        <div id="check-msg"></div>
+        <button type="button" class="btn btn-ghost" data-section="test">Open speaker test board →</button>
       </div>
       <div class="panel stack">
         <div class="panel-head"><div><h2>Mobile panic app</h2><p>Staff phones use the PWA for big emergency buttons and quick bells.</p></div></div>
@@ -786,6 +925,7 @@ function topbarHtml() {
     speakers: "Per-horn telemetry, bell volume, and tone tests",
     activity: "Full audit trail for every command",
     staff: "Create and revoke staff PINs",
+    test: "Desk notify board — who was rung and how each phone responded",
     bells: "Play or schedule class bells from the desk",
     system: "Arm state, speaker check, and mobile app link",
   };
@@ -1042,10 +1182,16 @@ function wireOverviewSection() {
       if (msg) msg.innerHTML = `<div class="error-banner">${escapeHtml(err.message)}</div>`;
     }
   });
-  $("#speaker-check")?.addEventListener("click", () => void playAction("test.speakers", $("#quick-msg")));
+  $("#speaker-check")?.addEventListener("click", () => void runSpeakerCheck($("#quick-msg")));
   $("#play-first")?.addEventListener("click", () => void playAction("bells.first", $("#quick-msg")));
   $("#play-second")?.addEventListener("click", () => void playAction("bells.second", $("#quick-msg")));
   $("#refresh-overview")?.addEventListener("click", () => void refreshOverviewPanel());
+}
+
+function wireTestSection() {
+  $("#speaker-check")?.addEventListener("click", () => void runSpeakerCheck($("#check-msg")));
+  $("#refresh-test-notify")?.addEventListener("click", () => void refreshTestNotifyPanel());
+  void refreshTestNotifyPanel();
 }
 
 function wireSystemSection() {
@@ -1059,7 +1205,6 @@ function wireSystemSection() {
       if (msg) msg.innerHTML = `<div class="error-banner">${escapeHtml(err.message)}</div>`;
     }
   });
-  $("#speaker-check")?.addEventListener("click", () => void playAction("test.speakers", $("#check-msg")));
 }
 
 function wireSectionEvents() {
@@ -1067,6 +1212,7 @@ function wireSectionEvents() {
     btn.addEventListener("click", () => void setSection(btn.dataset.section));
   });
   if (state.section === "overview") wireOverviewSection();
+  if (state.section === "test") wireTestSection();
   if (state.section === "speakers") wireSpeakersSection();
   if (state.section === "staff") wireStaffSection();
   if (state.section === "bells") wireBellsSection();
@@ -1094,6 +1240,8 @@ async function renderSection(section) {
     } else if (section === "staff") {
       const pins = await loadPins();
       html = sectionStaffHtml(pins);
+    } else if (section === "test") {
+      html = sectionTestHtml();
     } else if (section === "bells") {
       html = sectionBellsHtml();
     } else if (section === "system") {
@@ -1117,6 +1265,9 @@ async function setSection(section) {
   if (state._speakersTimer) {
     clearInterval(state._speakersTimer);
     state._speakersTimer = null;
+  }
+  if (section !== "test" && section !== "overview" && section !== "system") {
+    stopTestNotifyPoll();
   }
   await renderSection(section);
 }
