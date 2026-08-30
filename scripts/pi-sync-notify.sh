@@ -10,7 +10,7 @@ AUDIO_DIR="${APP_HOME}/.config/arnold-alarm/audio"
 
 # Edit these for your campus desk phones (comma-separated Talk extensions):
 NOTIFY_EXTS="${NOTIFY_EXTS:-0023}"
-NOTIFY_LABELS="${NOTIFY_LABELS:-0023:SEC desk}"
+NOTIFY_LABELS="${NOTIFY_LABELS:-0023:Adin's phone}"
 
 merge_env() {
   local key="$1"
@@ -68,4 +68,4 @@ echo ""
 echo "==> Health (look for testNotify.configured=true and promptReady=true):"
 curl -s http://127.0.0.1:8787/health | python3 -m json.tool 2>/dev/null | head -40 || curl -s http://127.0.0.1:8787/health | head -c 800
 echo ""
-echo "Done. Run speaker check from desk → Speaker test. SEC should ring with press-0 prompt."
+echo "Done. Run speaker check from desk → Speaker test. Adin's phone (0023) should ring with press-0 prompt."
