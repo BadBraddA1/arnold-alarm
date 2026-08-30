@@ -13,6 +13,9 @@ importers:
       '@vexyl.ai/sip':
         specifier: ^1.0.4
         version: 1.0.4(ws@8.21.0)
+      ably:
+        specifier: ^2.28.0
+        version: 2.28.0
       jose:
         specifier: ^6.0.11
         version: 6.2.10

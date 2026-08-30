@@ -13,10 +13,11 @@ PIN-gated class bells + evacuation for **Arnold Church of Christ**. Audio goes t
 ```
 Phone → alarm.arnoldcoc.org (Worker + D1 PINs)
 Phone → alarm-gw.local:8787/play   (LAN / church Wi‑Fi only)
+Pi    ← Ably push (remote play jobs) + 60s D1 poll fallback (heartbeat / missed jobs)
 Pi    → UniFi Protect NVR → AI speakers
 ```
 
-- Site works on cellular. **Play** needs either church Wi‑Fi (direct to Pi) or a PIN with **remote** scope (Worker queue → Pi poll).
+- Site works on cellular. **Play** needs either church Wi‑Fi (direct to Pi) or a PIN with **remote** scope (Worker queue → **Ably push** to Pi; slow D1 poll as fallback).
 - PINs live in **Cloudflare D1** (hashed). Sessions expire after **45 minutes** (or **30 minutes idle**) so a left-unlocked phone does not stay armed.
 - **Arm / disarm:** Admins arm/disarm and run speaker check from the <strong>Admin</strong> panel. Staff can still send bells/codes while unarmed — commands are **held** (audit log) and speakers stay silent until an admin arms again. Default is armed. **Arm state + Home activity sync live across phones** via Ably (12s poll fallback if Ably is down).
 - Status distinguishes **queued on campus** vs **playing now**, and **Pi offline** vs **Protect unreachable**.
@@ -151,7 +152,7 @@ No need to re-test speakers for UI work. When the building is empty, re-verify o
 
 1. Test tone — walk each horn.
 2. Code Blue once (short), then All clear.
-3. Remote queue from cell (remote PIN) — confirm status says queued, then audio after Pi poll.
+3. Remote queue from cell (remote PIN) — confirm status says queued, then audio within a few seconds (Ably push; slow poll if push missed).
 
 ## Convenience PA (SIP dial-in — not emergency)
 

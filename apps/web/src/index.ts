@@ -1,4 +1,4 @@
-import { publishSystemEvent, createSystemTokenRequest } from "./ably";
+import { publishSystemEvent, createSystemTokenRequest, publishGatewayJob, publishGatewayCancel, createGatewayTokenRequest, GATEWAY_CHANNEL } from "./ably";
 import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import bcrypt from "bcryptjs";
@@ -474,6 +474,16 @@ app.post("/api/play-remote", async (c) => {
     status: delayMinutes > 0 ? "scheduled" : "queued",
     at: Date.now(),
   });
+  const volumes = await getVolumeSettings(c.env);
+  await publishGatewayJob(c.env, {
+    type: "play",
+    id,
+    actionId,
+    delayMinutes,
+    label: session.label,
+    loop,
+    volumes,
+  });
   return c.json({
     ok: true,
     id,
@@ -517,6 +527,7 @@ app.delete("/api/schedule/:id", async (c) => {
   if (!ok) {
     return c.json({ error: "Not found or already fired." }, 404);
   }
+  await publishGatewayCancel(c.env, id);
   await insertAudit(c.env, {
     id: crypto.randomUUID(),
     actionId: "__void_schedule__",
@@ -574,6 +585,16 @@ app.post("/api/stop-remote", async (c) => {
     actionId: "__all_clear__",
     status: "queued",
     at: Date.now(),
+  });
+  const volumes = await getVolumeSettings(c.env);
+  await publishGatewayJob(c.env, {
+    type: "play",
+    id,
+    actionId: "__all_clear__",
+    delayMinutes: 0,
+    label: session.label,
+    command: "all_clear",
+    volumes,
   });
   return c.json({
     ok: true,
@@ -727,7 +748,7 @@ app.get("/api/gateway/status", async (c) => {
   const ageSec = Number.isFinite(seenMs)
     ? Math.max(0, Math.round((Date.now() - seenMs) / 1000))
     : null;
-  const online = ageSec != null && ageSec < 45;
+  const online = ageSec != null && ageSec < 120;
   return c.json({
     seen: true,
     online,
@@ -739,6 +760,21 @@ app.get("/api/gateway/status", async (c) => {
         ? `Campus gateway last seen ${ageSec}s ago — queued plays may wait.`
         : "Campus gateway status unknown.",
   });
+});
+
+/** Ably token for campus gateway — subscribe to pushed play jobs. */
+app.get("/api/gateway/ably-token", async (c) => {
+  if (!gatewayAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
+  if (!c.env.ABLY_API_KEY) {
+    return c.json({ error: "Live push not configured." }, 503);
+  }
+  try {
+    const tokenRequest = await createGatewayTokenRequest(c.env, "gateway-primary");
+    return c.json({ tokenRequest, channel: GATEWAY_CHANNEL });
+  } catch (err) {
+    console.error("[ably/gateway-token]", err);
+    return c.json({ error: "Could not create live token." }, 500);
+  }
 });
 
 app.get("/api/gateway/poll", async (c) => {

@@ -12,6 +12,8 @@ import {
 } from "./protect.js";
 import { getPlaybackState, stopTalkback, stopTalkbackAndWait } from "./talkback.js";
 import { getPaStatus, startPaAudioSocket } from "./pa-sip.js";
+import { handleCloudJob } from "./cloud-jobs.js";
+import { startAblyPush } from "./ably-push.js";
 
 const PORT = Number(process.env.PORT || 8787);
 const PLAY_JWT_SECRET = process.env.PLAY_JWT_SECRET || "";
@@ -24,7 +26,8 @@ const TELEMETRY_URL =
   process.env.CLOUD_TELEMETRY_URL ||
   "https://alarm.arnoldcoc.org/api/gateway/telemetry";
 const POLL_SECRET = process.env.GATEWAY_POLL_SECRET || "";
-const POLL_MS = Number(process.env.CLOUD_POLL_MS || 2000);
+const POLL_MS = Number(process.env.CLOUD_POLL_MS || 60_000);
+const TELEMETRY_MS = Number(process.env.CLOUD_TELEMETRY_MS || 30_000);
 
 // Optional local defaults; cloud Admin settings override via poll.
 if (process.env.BELL_VOLUME || process.env.EVAC_VOLUME) {
@@ -174,8 +177,7 @@ function cancelJob(id: string): boolean {
   return true;
 }
 
-function scheduleJob(actionId: string, delayMs: number) {
-  const id = crypto.randomUUID();
+function scheduleJob(actionId: string, delayMs: number, id: string = crypto.randomUUID()) {
   const fireAt = Date.now() + delayMs;
   const timer = setTimeout(() => {
     scheduled.delete(id);
@@ -208,7 +210,7 @@ let lastTelemetryAt = 0;
 async function reportTelemetry(force = false) {
   if (!POLL_SECRET) return;
   const now = Date.now();
-  if (!force && now - lastTelemetryAt < 8_000) return;
+  if (!force && now - lastTelemetryAt < TELEMETRY_MS) return;
   lastTelemetryAt = now;
   try {
     const speakers = await listProtectSpeakers();
@@ -262,37 +264,31 @@ async function pollCloudOnce() {
     setVolumeProfile(data.volumes);
   }
   for (const job of data.jobs || []) {
-    console.log(
-      `[poll] job ${job.id} ${job.command || "play"} ${job.actionId} delay=${job.delayMinutes} from ${job.label}`,
+    await handleCloudJob(
+      {
+        id: job.id,
+        actionId: job.actionId,
+        delayMinutes: job.delayMinutes,
+        label: job.label,
+        loop: job.loop,
+        command:
+          job.command === "stop" || job.command === "all_clear"
+            ? job.command
+            : undefined,
+      },
+      data.volumes,
+      cloudJobHandlers,
     );
-    try {
-      if (job.command === "stop") {
-        stopTalkback();
-        await ackCloud(job.id, true);
-        continue;
-      }
-      if (job.command === "all_clear" || job.actionId === "__all_clear__") {
-        await runAction("__all_clear__");
-        await ackCloud(job.id, true);
-        continue;
-      }
-      if (job.delayMinutes > 0) {
-        scheduleJob(job.actionId, job.delayMinutes * 60_000);
-        await ackCloud(job.id, true);
-      } else {
-        await runAction(job.actionId, { loop: job.loop });
-        console.log(`[poll] job ok ${job.id} ${job.actionId}`);
-        await ackCloud(job.id, true);
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "failed";
-      console.error(`[poll] job failed ${job.id}`, message);
-      await ackCloud(job.id, false, message);
-    }
   }
-  // Refresh Admin speaker list after jobs (or idle polls).
   void reportTelemetry(Boolean(data.jobs?.length));
 }
+
+const cloudJobHandlers = {
+  runAction,
+  scheduleJob,
+  ackCloud,
+  cancelLocalSchedule: cancelJob,
+};
 
 const playSchema = z.object({
   actionId: z.string().min(1),
@@ -346,6 +342,8 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
       actions: Object.keys(actions),
       scheduled: listScheduled().length,
       poll: Boolean(POLL_SECRET),
+      pollMs: POLL_MS,
+      ablyPush: process.env.CLOUD_ABLY_PUSH !== "0" && Boolean(POLL_SECRET),
       playback,
       protect,
       pa: getPaStatus(),
@@ -485,11 +483,17 @@ if (!PLAY_JWT_SECRET) {
 if (!POLL_SECRET) {
   console.warn("WARNING: GATEWAY_POLL_SECRET empty — cloud poll disabled");
 } else {
+  startAblyPush(cloudJobHandlers);
   setInterval(() => {
     void pollCloudOnce();
   }, POLL_MS);
+  setInterval(() => {
+    void reportTelemetry(true);
+  }, TELEMETRY_MS);
   void pollCloudOnce();
-  console.log(`cloud poll every ${POLL_MS}ms → ${POLL_URL}`);
+  console.log(
+    `cloud push via Ably + fallback poll every ${POLL_MS}ms → ${POLL_URL}`,
+  );
 }
 
 createServer((req, res) => {
