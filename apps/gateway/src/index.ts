@@ -47,6 +47,7 @@ type ScheduledJob = {
   actionId: string;
   fireAt: number;
   timer: ReturnType<typeof setTimeout>;
+  skipTestNotify?: boolean;
 };
 
 const scheduled = new Map<string, ScheduledJob>();
@@ -94,7 +95,7 @@ async function verifyPlayToken(token: string, actionId: string) {
 
 async function runAction(
   actionId: string,
-  options: { loop?: boolean; repeat?: number } = {},
+  options: { loop?: boolean; repeat?: number; skipTestNotify?: boolean } = {},
 ) {
   if (actionId === "__all_clear__") {
     await withActionVolume("evacuate.code_green", async () => {
@@ -147,14 +148,27 @@ async function runAction(
   const repeat =
     options.repeat ??
     (def.kind === "talkback" && def.repeat ? def.repeat : undefined);
-  if (actionId === "test.speakers") {
+  if (actionId === "test.speakers" && !options.skipTestNotify) {
     try {
       const { notifyDeskPhonesOfTest } = await import("./pa-sip.js");
       const result = await notifyDeskPhonesOfTest();
       if (result.called.length) {
         console.log(
-          `[play] test notify ok=${result.ok.join(",") || "none"} failed=${result.failed.map((f) => f.ext).join(",") || "none"}`,
+          `[play] test notify ok=${result.ok.join(",") || "none"} failed=${result.failed.map((f) => f.ext).join(",") || "none"}${result.delayed ? ` delay=${result.delayMinutes}m by ${result.delayedBy.join(",")}` : ""}`,
         );
+      }
+      if (result.delayed && result.delayMinutes > 0) {
+        if (isSpeakerCheckNotifyOnly()) {
+          console.log("[play] speaker check delayed — notify-only, horns already skipped");
+          return;
+        }
+        const job = scheduleJob("test.speakers", result.delayMinutes * 60_000, crypto.randomUUID(), {
+          skipTestNotify: true,
+        });
+        console.log(
+          `[play] speaker check horns delayed ${result.delayMinutes}m — job ${job.id} at ${new Date(job.fireAt).toISOString()}`,
+        );
+        return;
       }
     } catch (err) {
       console.warn(
@@ -186,15 +200,20 @@ function cancelJob(id: string): boolean {
   return true;
 }
 
-function scheduleJob(actionId: string, delayMs: number, id: string = crypto.randomUUID()) {
+function scheduleJob(
+  actionId: string,
+  delayMs: number,
+  id: string = crypto.randomUUID(),
+  opts: { skipTestNotify?: boolean } = {},
+) {
   const fireAt = Date.now() + delayMs;
   const timer = setTimeout(() => {
     scheduled.delete(id);
-    void runAction(actionId).catch((err) => {
+    void runAction(actionId, { skipTestNotify: opts.skipTestNotify }).catch((err) => {
       console.error(`[schedule] failed ${actionId}`, err);
     });
   }, delayMs);
-  scheduled.set(id, { id, actionId, fireAt, timer });
+  scheduled.set(id, { id, actionId, fireAt, timer, skipTestNotify: opts.skipTestNotify });
   return { id, actionId, fireAt };
 }
 

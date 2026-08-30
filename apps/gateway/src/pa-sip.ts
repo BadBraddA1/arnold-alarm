@@ -283,6 +283,20 @@ function loadTestNotifyPcm(): Buffer {
   return pcm.length ? pcm : loadTestPromptPcm();
 }
 
+function loadTestDelayAckPcm(): Buffer {
+  const fromEnv = process.env.TEST_NOTIFY_DELAY_PROMPT;
+  if (fromEnv && existsSync(fromEnv)) return readFileSync(fromEnv);
+  return loadAssetPcm("pa-sip-test-delay.pcm");
+}
+
+function testNotifyDelayMinutes(): number {
+  return Math.max(1, Math.min(60, Number(process.env.TEST_NOTIFY_DELAY_MINUTES || 5)));
+}
+
+function testNotifyDtmfMs(): number {
+  return Math.max(3000, Number(process.env.TEST_NOTIFY_DTMF_MS || 12_000));
+}
+
 function parseTestNotifyExts(): string[] {
   const raw = (process.env.TEST_NOTIFY_EXTS || "").trim();
   if (!raw) return [];
@@ -306,6 +320,8 @@ export function getTestNotifyStatus() {
   return {
     exts: parseTestNotifyExts(),
     notifyOnly: isSpeakerCheckNotifyOnly(),
+    delayMinutes: testNotifyDelayMinutes(),
+    dtmfMs: testNotifyDtmfMs(),
   };
 }
 
@@ -313,16 +329,20 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Before speaker check: ring configured desk phones and play a stand-by prompt.
- * Failures are logged; speaker check still proceeds.
+ * Press 0 during/after the prompt to delay campus horns (not another desk ring).
+ * Failures are logged; speaker check still proceeds unless delayed.
  */
 export async function notifyDeskPhonesOfTest(): Promise<{
   called: string[];
   ok: string[];
   failed: Array<{ ext: string; error: string }>;
+  delayed: boolean;
+  delayMinutes: number;
+  delayedBy: string[];
 }> {
   const exts = parseTestNotifyExts();
   if (!exts.length) {
-    return { called: [], ok: [], failed: [] };
+    return { called: [], ok: [], failed: [], delayed: false, delayMinutes: 0, delayedBy: [] };
   }
   if (!stack) {
     console.warn("[test-notify] SIP stack not ready — skipping desk phone calls");
@@ -330,6 +350,9 @@ export async function notifyDeskPhonesOfTest(): Promise<{
       called: exts,
       ok: [],
       failed: exts.map((ext) => ({ ext, error: "sip_stack_unavailable" })),
+      delayed: false,
+      delayMinutes: 0,
+      delayedBy: [],
     };
   }
 
@@ -337,9 +360,12 @@ export async function notifyDeskPhonesOfTest(): Promise<{
   const talkUser = (process.env.PA_TALK_USER || "").trim();
   const talkPass = (process.env.PA_TALK_PASS || "").trim();
   const ringMs = Math.max(8_000, Number(process.env.TEST_NOTIFY_RING_MS || 25_000));
+  const dtmfMs = testNotifyDtmfMs();
   const pcm = loadTestNotifyPcm();
+  const delayAck = loadTestDelayAckPcm();
   const ok: string[] = [];
   const failed: Array<{ ext: string; error: string }> = [];
+  const delayedBy: string[] = [];
 
   console.log(`[test-notify] calling ${exts.join(", ")} via ${talkHost}`);
 
@@ -361,10 +387,26 @@ export async function notifyDeskPhonesOfTest(): Promise<{
             throw new Error(`no answer within ${Math.round(ringMs / 1000)}s`);
           }),
         ]);
-        if (pcm.length && dialog.sendAudioPaced) {
-          await dialog.sendAudioPaced(pcm);
+
+        let digit: string | null = null;
+        if (pcm.length) {
+          digit = await playPromptUntilDigit(dialog, pcm, dtmfMs);
         }
-        await dialog.bye?.();
+        if (!digit) {
+          digit = await waitForDtmf(dialog, Math.min(8000, dtmfMs));
+        }
+
+        if (digit === "0") {
+          delayedBy.push(ext);
+          if (delayAck.length) {
+            await playToPhone(dialog, delayAck);
+          } else {
+            console.log(`[test-notify] ${ext} pressed 0 — delay ack clip missing`);
+          }
+          console.log(`[test-notify] ${ext} requested delay`);
+        }
+
+        await hangUpWithGoodbye(dialog);
         ok.push(ext);
         console.log(`[test-notify] ${ext} ok`);
       } catch (err) {
@@ -372,7 +414,7 @@ export async function notifyDeskPhonesOfTest(): Promise<{
         failed.push({ ext, error: message });
         console.warn(`[test-notify] ${ext} failed:`, message);
         try {
-          await dialog?.bye?.();
+          if (dialog) await hangUpWithGoodbye(dialog);
         } catch {
           /* ignore */
         }
@@ -382,7 +424,16 @@ export async function notifyDeskPhonesOfTest(): Promise<{
 
   const settleMs = Math.max(0, Number(process.env.TEST_NOTIFY_SETTLE_MS || 1500));
   if (settleMs) await sleep(settleMs);
-  return { called: exts, ok, failed };
+
+  const delayed = delayedBy.length > 0;
+  const delayMinutes = delayed ? testNotifyDelayMinutes() : 0;
+  if (delayed) {
+    console.log(
+      `[test-notify] delay ${delayMinutes}m requested by ${delayedBy.join(", ")}`,
+    );
+  }
+
+  return { called: exts, ok, failed, delayed, delayMinutes, delayedBy };
 }
 
 function ivrApiUrl(): string {

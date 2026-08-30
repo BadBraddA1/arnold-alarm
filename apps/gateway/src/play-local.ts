@@ -16,7 +16,10 @@ function loadActions(): ActionMap {
   }
 }
 
-export async function playLocalAction(actionId: string): Promise<void> {
+export async function playLocalAction(
+  actionId: string,
+  options: { skipTestNotify?: boolean } = {},
+): Promise<void> {
   const actions = loadActions();
   if (actionId === "__all_clear__") {
     await withActionVolume("evacuate.code_green", async () => {
@@ -52,10 +55,25 @@ export async function playLocalAction(actionId: string): Promise<void> {
     actionId === "evacuate.code_red" ||
     actionId === "evacuate.code_blue" ||
     actionId === "evacuate.main";
-  if (actionId === "test.speakers") {
+  if (actionId === "test.speakers" && !options.skipTestNotify) {
     const { notifyDeskPhonesOfTest, isSpeakerCheckNotifyOnly } = await import("./pa-sip.js");
     try {
-      await notifyDeskPhonesOfTest();
+      const result = await notifyDeskPhonesOfTest();
+      if (result.delayed && result.delayMinutes > 0) {
+        if (isSpeakerCheckNotifyOnly()) {
+          console.log("[play-local] speaker check delayed — notify-only, horns already skipped");
+          return;
+        }
+        setTimeout(() => {
+          void playLocalAction("test.speakers", { skipTestNotify: true }).catch((err) => {
+            console.error("[play-local] delayed speaker check failed", err);
+          });
+        }, result.delayMinutes * 60_000);
+        console.log(
+          `[play-local] speaker check horns delayed ${result.delayMinutes}m by ${result.delayedBy.join(",")}`,
+        );
+        return;
+      }
     } catch (err) {
       console.warn(
         "[play-local] desk phone notify failed — continuing",
