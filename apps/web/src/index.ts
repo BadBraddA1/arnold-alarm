@@ -1123,8 +1123,8 @@ app.post("/api/admin/armed", async (c) => {
     label: session.label,
     pinId: session.pinId,
     mode: "admin",
-    status: "done",
-    detail: body.armed ? "system armed" : "system unarmed — plays held",
+    status: "status",
+    detail: body.armed ? undefined : "plays held until re-armed",
   });
   await publishSystemEvent(c.env, "armed", {
     armed: body.armed,
@@ -1134,7 +1134,7 @@ app.post("/api/admin/armed", async (c) => {
   await publishSystemEvent(c.env, "activity", {
     id: auditId,
     actionId: body.armed ? "__system_armed__" : "__system_unarmed__",
-    status: "done",
+    status: "status",
     at: Date.now(),
   });
   return c.json({

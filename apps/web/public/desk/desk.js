@@ -133,6 +133,7 @@ function actionLabel(actionId) {
 }
 
 function statusPlain(status) {
+  if (status === "status") return "status change";
   if (status === "queued") return "queued";
   if (status === "scheduled") return "scheduled";
   if (status === "done") return "played";
@@ -142,11 +143,40 @@ function statusPlain(status) {
   return status;
 }
 
-function statusClass(status) {
+function statusClass(status, actionId) {
+  if (isSystemStatusEvent(actionId)) {
+    return actionId === "__system_armed__" ? "ok" : "held";
+  }
   if (status === "done" || status === "queued" || status === "scheduled") return "ok";
   if (status === "held") return "held";
+  if (status === "status") return "neutral";
   if (status === "error") return "bad";
   return "neutral";
+}
+
+function isSystemStatusEvent(actionId) {
+  return actionId === "__system_armed__" || actionId === "__system_unarmed__";
+}
+
+function eventStatusLabel(e) {
+  if (isSystemStatusEvent(e.actionId)) {
+    return e.actionId === "__system_armed__" ? "Armed" : "Unarmed";
+  }
+  return statusPlain(e.status);
+}
+
+function eventDetail(e) {
+  if (isSystemStatusEvent(e.actionId)) {
+    if (e.actionId === "__system_unarmed__") {
+      return e.detail || "Plays held until re-armed";
+    }
+    return "—";
+  }
+  return [e.mode, e.detail].filter(Boolean).join(" · ") || "—";
+}
+
+function lastPlayEvent(events) {
+  return (events || []).find((e) => !isSystemStatusEvent(e.actionId));
 }
 
 function evacPhaseLabel(phase) {
@@ -411,7 +441,7 @@ function statStrip(data) {
   const speakers = data?.speakers?.items || [];
   const connected = speakers.filter((s) => String(s.state).toUpperCase() === "CONNECTED").length;
   const phase = data?.evacPhase || "idle";
-  const last = (data?.events || [])[0];
+  const last = lastPlayEvent(data?.events) || (data?.events || [])[0];
   return `
     <div class="stat-strip">
       <div class="stat-card">
@@ -435,9 +465,9 @@ function statStrip(data) {
         <p class="hint">${data?.scheduledCount ? `${data.scheduledCount} bell(s) scheduled` : "No pending bells"}</p>
       </div>
       <div class="stat-card">
-        <p class="label">Last activity</p>
-        <p class="value" style="font-size:0.92rem">${last ? escapeHtml(actionLabel(last.actionId)) : "—"}</p>
-        <p class="hint">${last ? `${escapeHtml(last.label)} · ${escapeHtml(formatCentral(last.createdAt))}` : "No events yet"}</p>
+        <p class="label">Last play</p>
+        <p class="value" style="font-size:0.92rem">${last && !isSystemStatusEvent(last.actionId) ? escapeHtml(actionLabel(last.actionId)) : "—"}</p>
+        <p class="hint">${last && !isSystemStatusEvent(last.actionId) ? `${escapeHtml(last.label)} · ${escapeHtml(formatCentral(last.createdAt))}` : "No speaker plays yet"}</p>
       </div>
     </div>`;
 }
@@ -473,8 +503,8 @@ function activityTable(events, limit = 12) {
           <td>${escapeHtml(formatCentral(e.createdAt))}</td>
           <td>${escapeHtml(e.label)}</td>
           <td>${escapeHtml(actionLabel(e.actionId))}</td>
-          <td><span class="status-pill ${statusClass(e.status)}">${escapeHtml(statusPlain(e.status))}</span></td>
-          <td class="muted">${escapeHtml([e.mode, e.detail].filter(Boolean).join(" · ") || "—")}</td>
+          <td><span class="status-pill ${statusClass(e.status, e.actionId)}">${escapeHtml(eventStatusLabel(e))}</span></td>
+          <td class="muted">${escapeHtml(eventDetail(e))}</td>
         </tr>`,
       )
       .join("")}</tbody></table></div>`;

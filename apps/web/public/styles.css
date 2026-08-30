@@ -347,6 +347,9 @@ button, input { font: inherit; }
   color: #ffd4d1;
   border-color: color-mix(in oklab, var(--danger) 45%, var(--line));
 }
+.audit-item--status .who-action {
+  font-weight: 600;
+}
 .field { display: flex; flex-direction: column; gap: 0.35rem; }
 .field input {
   border-radius: 8px;

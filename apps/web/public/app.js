@@ -564,17 +564,18 @@ async function loadAudit() {
     return;
   }
   const events = data.events || [];
+  const lastPlay = events.find((e) => !isSystemStatusEvent(e.actionId));
   if (lastEl) {
-    if (!events.length) {
+    if (!lastPlay) {
       lastEl.className = "last-play muted";
       lastEl.textContent = "No plays yet.";
     } else {
-      const e = events[0];
+      const e = lastPlay;
       lastEl.className = "last-play";
       lastEl.innerHTML = `
         <p class="last-play-label">Last play</p>
         <p class="last-play-main">${escapeHtml(actionLabel(e.actionId))}</p>
-        <p class="last-play-meta">${escapeHtml(e.label)} · ${escapeHtml(formatCentral(e.createdAt))} · ${escapeHtml(statusPlain(e.status))}</p>`;
+        <p class="last-play-meta">${escapeHtml(e.label)} · ${escapeHtml(formatCentral(e.createdAt))} · ${escapeHtml(eventStatusLabel(e))}</p>`;
     }
   }
   if (!el) return;
@@ -586,23 +587,50 @@ async function loadAudit() {
   el.innerHTML = events
     .slice(0, 40)
     .map((e) => {
-      const ok =
-        e.status === "done" ||
-        e.status === "queued" ||
-        e.status === "scheduled" ||
-        e.status === "held";
-      const detail = [e.mode, e.detail].filter(Boolean).join(" · ");
-      return `<div class="audit-item">
+      const pillClass = eventStatusClass(e);
+      const detail = eventDetail(e);
+      return `<div class="audit-item${isSystemStatusEvent(e.actionId) ? " audit-item--status" : ""}">
         <div class="when">${escapeHtml(formatCentral(e.createdAt))}</div>
         <p class="who-action">${escapeHtml(e.label)} · ${escapeHtml(actionLabel(e.actionId))}</p>
-        ${detail ? `<div class="meta">${escapeHtml(detail)}</div>` : ""}
-        <span class="status-pill ${ok ? "ok" : "bad"}${e.status === "held" ? " held" : ""}">${escapeHtml(statusPlain(e.status))}</span>
+        ${detail && detail !== "—" ? `<div class="meta">${escapeHtml(detail)}</div>` : ""}
+        <span class="status-pill ${pillClass}${e.status === "held" ? " held" : ""}">${escapeHtml(eventStatusLabel(e))}</span>
       </div>`;
     })
     .join("");
 }
 
+function isSystemStatusEvent(actionId) {
+  return actionId === "__system_armed__" || actionId === "__system_unarmed__";
+}
+
+function eventStatusLabel(e) {
+  if (isSystemStatusEvent(e.actionId)) {
+    return e.actionId === "__system_armed__" ? "Armed" : "Unarmed";
+  }
+  return statusPlain(e.status);
+}
+
+function eventStatusClass(e) {
+  if (isSystemStatusEvent(e.actionId)) {
+    return e.actionId === "__system_armed__" ? "ok" : "held";
+  }
+  if (e.status === "done" || e.status === "queued" || e.status === "scheduled") return "ok";
+  if (e.status === "held") return "held";
+  return "bad";
+}
+
+function eventDetail(e) {
+  if (isSystemStatusEvent(e.actionId)) {
+    if (e.actionId === "__system_unarmed__") {
+      return e.detail || "Plays held until re-armed";
+    }
+    return "";
+  }
+  return [e.mode, e.detail].filter(Boolean).join(" · ");
+}
+
 function statusPlain(status) {
+  if (status === "status") return "status change";
   if (status === "queued") return "queued on campus";
   if (status === "scheduled") return "scheduled";
   if (status === "done") return "played";
