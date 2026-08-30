@@ -832,8 +832,8 @@ function testNotifyCallIdentity(): {
   const talkHost = (process.env.PA_TALK_HOST || "192.168.1.1").trim();
   const fromExt = (
     process.env.TEST_NOTIFY_FROM ||
-    process.env.PA_PAGE_USER ||
     process.env.PA_TALK_USER ||
+    process.env.PA_PAGE_USER ||
     ""
   ).trim();
   if (!fromExt) return {};
@@ -1214,7 +1214,10 @@ export async function startPaAudioSocket(): Promise<void> {
     publicAddress,
     udp: true,
     tcp: true,
-    maxConcurrentCalls: 4,
+    maxConcurrentCalls: Math.max(
+      4,
+      Number(process.env.PA_MAX_CONCURRENT_CALLS || 8),
+    ),
     ringTimeLimit: Math.max(8_000, Number(process.env.TEST_NOTIFY_RING_MS || 25_000)),
     ...(talkUser && talkPass
       ? { credentials: { user: talkUser, password: talkPass } }

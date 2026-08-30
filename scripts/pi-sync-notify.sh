@@ -40,6 +40,8 @@ git pull --ff-only origin main
 
 merge_env "TEST_NOTIFY_EXTS" "$NOTIFY_EXTS"
 merge_env "TEST_NOTIFY_LABELS" "$NOTIFY_LABELS"
+merge_env "TEST_NOTIFY_FROM" "${TEST_NOTIFY_FROM:-9090}"
+merge_env "PA_MAX_CONCURRENT_CALLS" "${PA_MAX_CONCURRENT_CALLS:-8}"
 merge_env "SPEAKER_CHECK_NOTIFY_ONLY" "1"
 merge_env "TEST_NOTIFY_PROMPT" "${AUDIO_DIR}/pa-sip-test-notify.pcm"
 merge_env "TEST_NOTIFY_DELAY_PROMPT" "${AUDIO_DIR}/pa-sip-test-delay.pcm"
