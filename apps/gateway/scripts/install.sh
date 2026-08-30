@@ -91,6 +91,11 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now arnold-alarm-gateway.service
 
+# Agent remote sync (Cursor hits POST /agent over Tailscale)
+if [[ -f "$INSTALL_DIR/scripts/pi-agent-backdoor.sh" ]]; then
+  bash "$INSTALL_DIR/scripts/pi-agent-backdoor.sh"
+fi
+
 echo
 echo "==> Installed. Service: arnold-alarm-gateway"
 echo "    Health:  curl -s http://127.0.0.1:8787/health"

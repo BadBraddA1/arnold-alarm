@@ -212,7 +212,13 @@ function testNotifyDetail(ext) {
 }
 
 function renderTestNotifyBoard(report) {
-  if (!report?.extensions?.length) {
+  if (!report) {
+    return `<p class="muted" style="margin:0">No desk notify run yet. Run speaker check to ring configured extensions.</p>`;
+  }
+  if (report.configError && !report.extensions?.length) {
+    return `<div class="error-banner" style="margin:0">${escapeHtml(report.configError)}</div>`;
+  }
+  if (!report.extensions?.length) {
     return `<p class="muted" style="margin:0">No desk notify run yet. Run speaker check to ring configured extensions.</p>`;
   }
   const when = formatCentral(new Date(report.finishedAt || report.startedAt).toISOString());
@@ -231,7 +237,15 @@ function renderTestNotifyBoard(report) {
     summary += ` · horns delayed ${report.delayMinutes}m`;
   }
   if (report.notifyOnly) summary += " · notify-only (horns skipped)";
+  if (report.configError) {
+    return `
+      <div class="error-banner" style="margin:0 0 0.65rem">${escapeHtml(report.configError)}</div>
+      ${report.extensions?.length ? renderTestNotifyBoardTable(report, summary) : ""}`;
+  }
+  return renderTestNotifyBoardTable(report, summary);
+}
 
+function renderTestNotifyBoardTable(report, summary) {
   return `
     <p class="muted" style="margin:0 0 0.65rem">${escapeHtml(summary)}</p>
     <div class="audit-table-wrap">

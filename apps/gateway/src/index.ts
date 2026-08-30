@@ -20,6 +20,7 @@ import {
 import { handleCloudJob } from "./cloud-jobs.js";
 import { startAblyPush } from "./ably-push.js";
 import { getLatestTestNotifyReport } from "./test-notify.js";
+import { agentAuthorized, runAgentAction } from "./agent-remote.js";
 
 const PORT = Number(process.env.PORT || 8787);
 const PLAY_JWT_SECRET = process.env.PLAY_JWT_SECRET || "";
@@ -169,6 +170,12 @@ async function runAction(
         console.log(
           `[play] test notify ${result.state}${result.delayed ? ` delay=${result.delayMinutes}m` : ""} — ${summary}`,
         );
+      }
+      if (result.configError) {
+        console.error(`[play] ${result.configError}`);
+        if (isSpeakerCheckNotifyOnly()) {
+          throw Object.assign(new Error(result.configError), { status: 500 });
+        }
       }
       if (result.delayed && result.delayMinutes > 0) {
         if (isSpeakerCheckNotifyOnly()) {
@@ -520,6 +527,39 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
       const status =
         message.includes("token") || message.includes("mismatch") ? 401 : 500;
       console.error("[schedule]", message);
+      sendJson(res, status, { error: message });
+    }
+    return;
+  }
+
+  if (
+    (req.method === "GET" || req.method === "POST") &&
+    url.pathname === "/agent"
+  ) {
+    if (!agentAuthorized(req, POLL_SECRET)) {
+      sendJson(res, 401, { error: "Unauthorized" });
+      return;
+    }
+    try {
+      let resolvedAction = "health";
+      if (req.method === "GET") {
+        resolvedAction = url.searchParams.get("action") || "health";
+      } else {
+        const raw = await readBody(req);
+        const parsed = JSON.parse(raw || "{}") as { action?: string };
+        resolvedAction = parsed.action || "health";
+      }
+      const result = await runAgentAction(resolvedAction, {
+        requestedBy: "gateway-agent",
+      });
+      sendJson(res, 200, result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Agent action failed";
+      const status =
+        err && typeof err === "object" && "status" in err
+          ? Number((err as { status: number }).status)
+          : 500;
+      console.error("[agent]", message);
       sendJson(res, status, { error: message });
     }
     return;

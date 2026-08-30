@@ -526,6 +526,8 @@ export type TestNotifyReportRow = {
   delayed: boolean;
   delayedBy: string[];
   hornsAt?: number | null;
+  configError?: string;
+  promptReady?: boolean;
   extensions: TestNotifyExtReportRow[];
 };
 

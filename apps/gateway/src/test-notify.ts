@@ -34,6 +34,9 @@ export type TestNotifyReport = {
   delayedBy: string[];
   hornsAt?: number | null;
   extensions: TestNotifyExtReport[];
+  /** Set when TEST_NOTIFY_EXTS or prompt clips are missing on the Pi. */
+  configError?: string;
+  promptReady?: boolean;
 };
 
 let latestReport: TestNotifyReport | null = null;

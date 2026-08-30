@@ -333,6 +333,18 @@ function parseTestNotifyLabels(): Record<string, string> {
   return labels;
 }
 
+function testNotifyPromptReady(): boolean {
+  const fromEnv = process.env.TEST_NOTIFY_PROMPT;
+  if (fromEnv && existsSync(fromEnv)) return true;
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(here, "..", "assets", "pa-sip-test-notify.pcm"),
+    join(process.cwd(), "assets", "pa-sip-test-notify.pcm"),
+    join(process.env.HOME || "", ".config/arnold-alarm/audio/pa-sip-test-notify.pcm"),
+  ];
+  return candidates.some((p) => existsSync(p));
+}
+
 export function getTestNotifyConfig() {
   const exts = parseTestNotifyExts();
   const labels = parseTestNotifyLabels();
@@ -341,6 +353,8 @@ export function getTestNotifyConfig() {
     delayMinutes: testNotifyDelayMinutes(),
     dtmfMs: testNotifyDtmfMs(),
     notifyOnly: isSpeakerCheckNotifyOnly(),
+    promptReady: testNotifyPromptReady(),
+    configured: exts.length > 0,
   };
 }
 
@@ -383,7 +397,13 @@ export async function notifyDeskPhonesOfTest(meta?: {
   });
 
   if (!exts.length) {
-    return emptyReport();
+    const report = emptyReport();
+    report.configError =
+      "TEST_NOTIFY_EXTS is not set in gateway.env — desk phones will not ring. Add e.g. TEST_NOTIFY_EXTS=0023";
+    report.promptReady = testNotifyPromptReady();
+    await publishTestNotifyReport(report);
+    console.error(`[test-notify] ${report.configError}`);
+    return report;
   }
 
   const report = createTestNotifyReport({
@@ -395,6 +415,12 @@ export async function notifyDeskPhonesOfTest(meta?: {
     delayMinutes: testNotifyDelayMinutes(),
   });
   report.hornsAt = meta?.hornsAt ?? null;
+  report.promptReady = testNotifyPromptReady();
+  if (!report.promptReady) {
+    report.configError =
+      "Spoken notify prompt missing — copy pa-sip-test-notify.pcm to ~/.config/arnold-alarm/audio/ (run render-notify-pcm.sh on a Mac). Until then you may only hear beeps, not the press-0 message.";
+    console.warn(`[test-notify] ${report.configError}`);
+  }
   await publishTestNotifyReport(report);
 
   if (!stack) {
