@@ -11,7 +11,12 @@ import {
   type ActionMap,
 } from "./protect.js";
 import { getPlaybackState, stopTalkback, stopTalkbackAndWait } from "./talkback.js";
-import { getPaStatus, startPaAudioSocket } from "./pa-sip.js";
+import {
+  getPaStatus,
+  getTestNotifyStatus,
+  isSpeakerCheckNotifyOnly,
+  startPaAudioSocket,
+} from "./pa-sip.js";
 import { handleCloudJob } from "./cloud-jobs.js";
 import { startAblyPush } from "./ably-push.js";
 
@@ -156,6 +161,10 @@ async function runAction(
         "[play] desk phone notify failed — continuing speaker check",
         err instanceof Error ? err.message : err,
       );
+    }
+    if (isSpeakerCheckNotifyOnly()) {
+      console.log("[play] speaker check notify-only — skipping campus horns");
+      return;
     }
   }
   await withActionVolume(actionId, () =>
@@ -347,6 +356,7 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
       playback,
       protect,
       pa: getPaStatus(),
+      testNotify: getTestNotifyStatus(),
       now: Date.now(),
     });
     return;

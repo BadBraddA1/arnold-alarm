@@ -296,6 +296,19 @@ function parseTestNotifyExts(): string[] {
   ];
 }
 
+/** When true, speaker check rings desk phones only — campus horns stay silent. */
+export function isSpeakerCheckNotifyOnly(): boolean {
+  const v = (process.env.SPEAKER_CHECK_NOTIFY_ONLY || "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
+export function getTestNotifyStatus() {
+  return {
+    exts: parseTestNotifyExts(),
+    notifyOnly: isSpeakerCheckNotifyOnly(),
+  };
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -1050,6 +1063,9 @@ export async function startPaAudioSocket(): Promise<void> {
   const notifyExts = parseTestNotifyExts();
   if (notifyExts.length) {
     console.log(`[pa] speaker-check will notify desk phones: ${notifyExts.join(", ")}`);
+  }
+  if (isSpeakerCheckNotifyOnly()) {
+    console.log("[pa] SPEAKER_CHECK_NOTIFY_ONLY=1 — speaker check will not play campus horns");
   }
 }
 

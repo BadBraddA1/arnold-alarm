@@ -53,14 +53,18 @@ export async function playLocalAction(actionId: string): Promise<void> {
     actionId === "evacuate.code_blue" ||
     actionId === "evacuate.main";
   if (actionId === "test.speakers") {
+    const { notifyDeskPhonesOfTest, isSpeakerCheckNotifyOnly } = await import("./pa-sip.js");
     try {
-      const { notifyDeskPhonesOfTest } = await import("./pa-sip.js");
       await notifyDeskPhonesOfTest();
     } catch (err) {
       console.warn(
         "[play-local] desk phone notify failed — continuing",
         err instanceof Error ? err.message : err,
       );
+    }
+    if (isSpeakerCheckNotifyOnly()) {
+      console.log("[play-local] speaker check notify-only — skipping campus horns");
+      return;
     }
   }
   await withActionVolume(actionId, () =>
