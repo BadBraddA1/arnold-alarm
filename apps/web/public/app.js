@@ -88,6 +88,10 @@ function setRoute(route) {
     render();
     return;
   }
+  if (route === "admin") {
+    window.location.href = "/desk/";
+    return;
+  }
   if (route === "home") {
     const solo = singlePanelRoute();
     if (solo) route = solo;
@@ -135,7 +139,17 @@ function singlePanelRoute(scopes = state.session?.scopes) {
 
 function routeAfterAuth() {
   if (state.session?.mustChangePin) return "change-pin";
-  return singlePanelRoute() || "home";
+  const solo = singlePanelRoute();
+  if (solo) return solo;
+  if (
+    state.session?.scopes?.includes("admin") &&
+    window.matchMedia("(min-width: 1024px)").matches &&
+    !sessionStorage.getItem("arnold-alarm-mobile")
+  ) {
+    window.location.href = "/desk/";
+    return "home";
+  }
+  return "home";
 }
 
 function backToHomeLink() {
@@ -489,8 +503,12 @@ function renderHome() {
       ${header(s.label)}
       <div class="stack">
         <div>
-          <h1 class="page-title">Choose a panel</h1>
-          <p class="muted" style="margin:0">Access is limited to what your PIN allows.</p>
+          <h1 class="page-title">${state.session.scopes.includes("admin") ? "Quick access" : "Choose a panel"}</h1>
+          <p class="muted" style="margin:0">${
+            state.session.scopes.includes("admin")
+              ? "Phone app — big emergency buttons. Full management lives on the desktop console."
+              : "Access is limited to what your PIN allows."
+          }</p>
         </div>
         ${
           !canAdmin && !armed
@@ -499,9 +517,9 @@ function renderHome() {
         }
         <div id="last-play" class="last-play muted">Loading last play…</div>
         <div class="tile-grid">
+          ${canEvac ? `<button type="button" class="tile" data-go="evacuate"><h2>Emergency codes</h2><p>Code Red, Blue, and All clear — panic buttons for your phone.</p></button>` : ""}
           ${canBells ? `<button type="button" class="tile" data-go="bells"><h2>Class bells</h2><p>First and second bell — play now or schedule to building time.</p></button>` : ""}
-          ${canEvac ? `<button type="button" class="tile" data-go="evacuate"><h2>Emergency codes</h2><p>Code Red, Blue, and All clear.</p></button>` : ""}
-          ${canAdmin ? `<button type="button" class="tile" data-go="admin"><h2>Admin</h2><p>Arm/disarm, speaker check, and staff PINs.</p></button>` : ""}
+          ${canAdmin ? `<a class="tile" href="/desk/" style="text-decoration:none"><h2>Desktop console</h2><p>Speakers, activity, staff PINs, and system controls — use on a computer.</p></a>` : ""}
         </div>
         <div class="stack" style="gap:0.5rem">
           <p style="margin:0;font-weight:600">Recent activity</p>

@@ -5,6 +5,8 @@ PIN-gated class bells + evacuation for **Arnold Church of Christ**. Audio goes t
 | | |
 |---|---|
 | **Web** | https://alarm.arnoldcoc.org (Cloudflare Worker + D1) |
+| **Desktop console** | https://alarm.arnoldcoc.org/desk/ (admin PIN — full management) |
+| **Mobile / panic** | https://alarm.arnoldcoc.org — big emergency codes + quick bells |
 | **Local** | `~/Code/arnold-alarm` |
 | **Gateway** | Pi `alarm-gw` → `http://alarm-gw.local:8787` (Tailscale `100.70.218.33`) |
 
@@ -27,10 +29,20 @@ Pi    → UniFi Protect NVR → AI speakers
 
 ```
 apps/web/       Cloudflare Worker (Hono) + static UI + D1
+  public/desk/  Desktop admin console (sidebar dashboard)
 apps/gateway/   Pi agent → Protect Alarm Manager
 scripts/        Pi bootstrap
 docs/           Plans (e.g. building-time bells)
 ```
+
+## Desktop vs mobile
+
+| Surface | URL | Purpose |
+|---|---|---|
+| **Desktop console** | `/desk/` | Admin PIN only — overview, all speakers, activity log, staff PINs, bells, arm/disarm |
+| **Mobile app** | `/` | Panic-first — big Code Red / Blue buttons, quick bells; admins get a link to the console |
+
+Admins on a wide screen are redirected to `/desk/` after PIN login. On phone, stay on `/` for emergency access.
 
 ## Web (Cloudflare)
 

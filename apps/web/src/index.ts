@@ -499,6 +499,112 @@ app.post("/api/play-remote", async (c) => {
   });
 });
 
+/** Admin console — queue campus play without requiring the remote PIN scope. */
+app.post("/api/admin/play", async (c) => {
+  const session = c.get("session");
+  if (!session?.scopes.includes("admin")) return c.json({ error: "Forbidden" }, 403);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
+
+  const body = (await c.req.json().catch(() => ({}))) as {
+    actionId?: string;
+    delayMinutes?: number;
+    loop?: boolean;
+  };
+  const actionId = body.actionId?.trim();
+  if (!actionId) return c.json({ error: "actionId required" }, 400);
+  if (!actionAllowed(actionId, session.scopes)) {
+    return c.json({ error: "Not allowed for this PIN." }, 403);
+  }
+  const delayMinutes = Math.max(0, Math.min(720, Number(body.delayMinutes) || 0));
+  const loop = resolvePlayLoop(
+    actionId,
+    typeof body.loop === "boolean" ? body.loop : undefined,
+  );
+
+  if (!(await getSystemArmed(c.env))) {
+    return c.json(
+      await holdUnarmedPlay(
+        c.env,
+        session,
+        actionId,
+        "admin",
+        [
+          delayMinutes > 0 ? `delay ${delayMinutes}m` : null,
+          loop ? "loop" : null,
+        ]
+          .filter(Boolean)
+          .join(" · ") || undefined,
+      ),
+    );
+  }
+
+  if (evacPhaseForAction(actionId)) {
+    const started = await beginEvacCode(c.env, actionId, session.label);
+    if (!started.ok) return c.json({ error: started.error }, 409);
+  }
+
+  const id = crypto.randomUUID();
+  const fireAt =
+    delayMinutes > 0
+      ? new Date(Date.now() + delayMinutes * 60_000).toISOString()
+      : null;
+  await enqueuePlay(c.env, {
+    id,
+    actionId,
+    pinId: session.pinId,
+    label: session.label,
+    delayMinutes,
+    loop,
+    fireAt,
+  });
+  await insertAudit(c.env, {
+    id,
+    actionId,
+    label: session.label,
+    pinId: session.pinId,
+    mode: "admin",
+    status: delayMinutes > 0 ? "scheduled" : "queued",
+    detail: [
+      delayMinutes > 0 ? `delay ${delayMinutes}m` : null,
+      fireAt ? `fire ${fireAt}` : null,
+      loop ? "loop" : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || undefined,
+  });
+  await publishSystemEvent(c.env, "activity", {
+    id,
+    actionId,
+    status: delayMinutes > 0 ? "scheduled" : "queued",
+    at: Date.now(),
+  });
+  const volumes = await getVolumeSettings(c.env);
+  await publishGatewayJob(c.env, {
+    type: "play",
+    id,
+    actionId,
+    delayMinutes,
+    label: session.label,
+    loop,
+    volumes,
+  });
+  return c.json({
+    ok: true,
+    id,
+    mode: "admin",
+    armed: true,
+    evacPhase: await getEvacPhase(c.env),
+    status: delayMinutes > 0 ? "scheduled" : "queued",
+    fireAt,
+    message:
+      delayMinutes > 0
+        ? `Scheduled on campus — will ring in about ${delayMinutes} min.`
+        : "Queued on campus — gateway usually picks this up within a few seconds.",
+  });
+});
+
 app.get("/api/schedule", async (c) => {
   const session = c.get("session");
   if (!session) return c.json({ error: "Unauthorized" }, 401);
@@ -855,7 +961,11 @@ app.post("/api/gateway/ack", async (c) => {
 app.get("/api/audit", async (c) => {
   const session = c.get("session");
   if (!session) return c.json({ error: "Unauthorized" }, 401);
-  const rows = await listAudit(c.env, 75);
+  const rawLimit = Number(c.req.query("limit"));
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(200, Math.max(1, Math.round(rawLimit)))
+    : 75;
+  const rows = await listAudit(c.env, limit);
   return c.json({
     events: rows.map((r) => ({
       id: r.id,
@@ -1071,6 +1181,62 @@ app.get("/api/admin/speakers", async (c) => {
     ageSec,
     volumes,
     gateway: { online: gatewayOnline, ageSec: gatewayAgeSec },
+  });
+});
+
+/** Admin desktop console — one round trip for overview dashboard. */
+app.get("/api/admin/overview", async (c) => {
+  const session = c.get("session");
+  if (!session?.scopes.includes("admin")) return c.json({ error: "Forbidden" }, 403);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
+  const [armed, evacPhase, snap, volumes, hb, auditRows, scheduled] = await Promise.all([
+    getSystemArmed(c.env),
+    getEvacPhase(c.env),
+    getSpeakersSnapshot(c.env),
+    getVolumeSettings(c.env),
+    getGatewayHeartbeat(c.env),
+    listAudit(c.env, 30),
+    listScheduledPlays(c.env),
+  ]);
+  let gatewayOnline = false;
+  let gatewayAgeSec: number | null = null;
+  if (hb?.last_seen) {
+    const seenMs = Date.parse(
+      hb.last_seen.includes("T") || hb.last_seen.includes("Z")
+        ? hb.last_seen
+        : `${hb.last_seen}Z`,
+    );
+    if (Number.isFinite(seenMs)) {
+      gatewayAgeSec = Math.max(0, Math.round((Date.now() - seenMs) / 1000));
+      gatewayOnline = gatewayAgeSec < 45;
+    }
+  }
+  const speakerAgeSec =
+    snap.at != null
+      ? Math.max(0, Math.round((Date.now() - snap.at) / 1000))
+      : null;
+  return c.json({
+    armed,
+    evacPhase,
+    gateway: { online: gatewayOnline, ageSec: gatewayAgeSec },
+    speakers: {
+      items: snap.speakers,
+      updatedAt: snap.at,
+      ageSec: speakerAgeSec,
+    },
+    volumes,
+    events: auditRows.map((r) => ({
+      id: r.id,
+      actionId: r.action_id,
+      label: r.label,
+      mode: r.mode,
+      status: r.status,
+      detail: r.detail,
+      createdAt: r.created_at,
+    })),
+    scheduledCount: scheduled.length,
   });
 });
 
