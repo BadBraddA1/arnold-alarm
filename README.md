@@ -148,7 +148,7 @@ Sequence example (second bell):
 - **Stop & All clear** is green (Code Green ×2 only — not a direct Code Green play button).
 - **Admin** panel: arm/disarm, live speaker status (from Protect), volume profiles, speaker check, and staff PIN management.
 - **Volume profiles:** Admin can set **class bell volume per speaker** (plus a default for new horns). Emergency / all clear / speaker check / PA use the emergency level (default **100%**). Speakers restore to emergency level after each bell.
-- **Speaker check desk notify:** before TEST ACOC, the gateway dials `TEST_NOTIFY_EXTS` (e.g. `0023,0014,0011,0015`) via UniFi Talk, plays a stand-by prompt, listens for **0** to delay horns (`TEST_NOTIFY_DELAY_MINUTES`, default 5), says **goodbye**, and hangs up. Optional friendly names: `TEST_NOTIFY_LABELS=0023:Front desk,0014:Office`. The desk **Speaker test** board shows live per-phone status (ringing, acknowledged, pressed 0, no answer).
+- **Speaker check desk notify:** before TEST ACOC, the gateway dials `TEST_NOTIFY_EXTS` (physical desks + Adin’s mobile: `0023,0011,0014,0015`) via UniFi Talk, plays a stand-by prompt, listens for **0** to delay horns (`TEST_NOTIFY_DELAY_MINUTES`, default 5), says **goodbye**, and hangs up. Labels: `TEST_NOTIFY_LABELS=0023:Adin's phone,0011:Left desk,0014:Elders office,0015:Right desk`. Other Endpoint App lines (0013, 0018, 0019, 0020) are not dialed yet. The desk **Speaker test** board shows live per-phone status (ringing, acknowledged, pressed 0, no answer).
 - **Audition desk prompt only:** set `SPEAKER_CHECK_NOTIFY_ONLY=1` on the Pi — speaker check rings `TEST_NOTIFY_EXTS` but skips campus horns. Remove before prod.
 
 ## Ops / safety notes
