@@ -8,11 +8,10 @@ REPO="${APP_HOME}/arnold-alarm"
 ENV_FILE="${APP_HOME}/.config/arnold-alarm/gateway.env"
 AUDIO_DIR="${APP_HOME}/.config/arnold-alarm/audio"
 
-# Physical desk phones (G3 Touch) + Adin's mobile (0023). Skip other Endpoint App lines for now.
-#   0011 Left desk · 0014 Elders office · 0015 Right desk · 0023 Adin's phone
-# Not in speaker check: 0013 Vanessa · 0018 Cindy · 0019 Andy · 0020 Pat (Endpoint App)
-NOTIFY_EXTS="${NOTIFY_EXTS:-0023,0011,0014,0015}"
-NOTIFY_LABELS="${NOTIFY_LABELS:-0023:Adin's phone,0011:Left desk,0014:Elders office,0015:Right desk}"
+# Physical desk phones later: 0011 Left desk · 0014 Elders office · 0015 Right desk
+# Audition on Adin's phone only for now:
+NOTIFY_EXTS="${NOTIFY_EXTS:-0023}"
+NOTIFY_LABELS="${NOTIFY_LABELS:-0023:Adin's phone}"
 
 merge_env() {
   local key="$1"
@@ -72,4 +71,4 @@ echo ""
 echo "==> Health (look for testNotify.configured=true and promptReady=true):"
 curl -s http://127.0.0.1:8787/health | python3 -m json.tool 2>/dev/null | head -40 || curl -s http://127.0.0.1:8787/health | head -c 800
 echo ""
-echo "Done. Run speaker check from desk → Speaker test (0023, 0011, 0014, 0015)."
+echo "Done. Run speaker check from desk → Speaker test (Adin's phone 0023 only for now)."
