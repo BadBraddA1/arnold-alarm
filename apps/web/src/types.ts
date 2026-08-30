@@ -73,6 +73,9 @@ export function actionAllowed(actionId: string, scopes: Scope[]): boolean {
   if (actionId.startsWith("test.speaker:")) {
     return hasScope(scopes, "admin");
   }
+  if (actionId.startsWith("test.phone:")) {
+    return hasScope(scopes, "admin");
+  }
   if (scopes.includes("admin")) return true;
   if (actionId.startsWith("bells.") && hasScope(scopes, "bells")) return true;
   if (actionId.startsWith("evacuate.") && hasScope(scopes, "evacuate")) return true;

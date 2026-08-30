@@ -125,6 +125,7 @@ function actionLabel(actionId) {
   if (actionId === "__all_clear__") return "Stop & All clear";
   if (actionId === "__stop__") return "Stop speakers";
   if (actionId === "test.speakers") return "Speaker check";
+  if (actionId.startsWith("test.phone:")) return "Desk phone test call";
   if (actionId.startsWith("test.speaker:")) return "Speaker tone test";
   if (actionId === "bells.first") return "First bell";
   if (actionId === "bells.second") return "Second bell";
@@ -290,6 +291,60 @@ function stopTestNotifyPoll() {
   }
 }
 
+const CAMPUS_PHONES = [
+  { ext: "0011", label: "Left desk" },
+  { ext: "0014", label: "Elders office" },
+  { ext: "0015", label: "Right desk" },
+  { ext: "0023", label: "Adin's phone" },
+];
+
+function phoneTestGridHtml() {
+  return `<div class="phone-test-grid">${CAMPUS_PHONES.map(
+    (p) => `<button type="button" class="btn btn-ghost phone-test-btn" data-test-phone="${escapeHtml(p.ext)}" data-test-phone-label="${escapeHtml(p.label)}">
+        <span class="phone-test-label">${escapeHtml(p.label)}</span>
+        <span class="phone-test-ext muted">${escapeHtml(p.ext)}</span>
+      </button>`,
+  ).join("")}</div>`;
+}
+
+async function testCallPhone(ext, label, btn) {
+  const msgEl = $("#phone-test-msg");
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add("is-busy");
+  }
+  if (msgEl) {
+    msgEl.innerHTML = `<p class="muted" style="margin:0">Calling ${escapeHtml(label)} (${escapeHtml(ext)})… pick up that phone.</p>`;
+  }
+  void refreshTestNotifyPanel();
+  armTestNotifyPoll();
+  try {
+    await playAction(`test.phone:${ext}`, msgEl);
+  } catch (err) {
+    if (msgEl) {
+      msgEl.innerHTML = `<div class="error-banner">${escapeHtml(err.message || "Call failed.")}</div>`;
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove("is-busy");
+    }
+    setTimeout(() => void refreshTestNotifyPanel(), 800);
+    setTimeout(() => void refreshTestNotifyPanel(), 4000);
+    setTimeout(() => stopTestNotifyPoll(), 60_000);
+  }
+}
+
+function wirePhoneTestButtons() {
+  document.querySelectorAll("[data-test-phone]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const ext = btn.getAttribute("data-test-phone");
+      const label = btn.getAttribute("data-test-phone-label") || ext;
+      if (ext) void testCallPhone(ext, label, btn);
+    });
+  });
+}
+
 async function runSpeakerCheck(msgEl) {
   void refreshTestNotifyPanel();
   armTestNotifyPoll();
@@ -447,7 +502,10 @@ async function playAction(actionId, msgEl, delayMinutes = 0) {
     if (res.ok && !data.held && data.armed !== false && data.token && data.gatewayUrl) {
       try {
         const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), actionId === "test.speakers" ? 45000 : 20000);
+        const timer = setTimeout(
+          () => ctrl.abort(),
+          actionId === "test.speakers" ? 45000 : actionId.startsWith("test.phone:") ? 90000 : 20000,
+        );
         const playRes = await fetch(`${data.gatewayUrl}/play`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -457,8 +515,9 @@ async function playAction(actionId, msgEl, delayMinutes = 0) {
         clearTimeout(timer);
         if (playRes.ok) {
           if (data.evacPhase) applyEvacPhase(data.evacPhase);
-          const text =
-            actionId === "test.speakers"
+          const text = actionId.startsWith("test.phone:")
+            ? "Test call finished — check the phone you rang."
+            : actionId === "test.speakers"
               ? "Speaker check running on campus."
               : actionId.startsWith("test.speaker:")
                 ? "Tone test playing on that speaker."
@@ -487,7 +546,9 @@ async function playAction(actionId, msgEl, delayMinutes = 0) {
     return data;
   }
   if (data.evacPhase) applyEvacPhase(data.evacPhase);
-  const ok = data.message || (delayMinutes > 0 ? "Scheduled on campus." : "Queued on campus.");
+  const ok = actionId.startsWith("test.phone:")
+    ? data.message || "Test call queued — pick up that desk phone."
+    : data.message || (delayMinutes > 0 ? "Scheduled on campus." : "Queued on campus.");
   if (msgEl) msgEl.innerHTML = `<div class="success-banner">${escapeHtml(ok)}</div>`;
   return data;
 }
@@ -715,6 +776,16 @@ function sectionOverviewHtml(data) {
 function sectionTestHtml() {
   return `
     <div class="stack">
+      <div class="panel stack">
+        <div class="panel-head">
+          <div>
+            <h2>Test one desk phone</h2>
+            <p>Calls a single phone from Campus Security — short beep + test clip. No horns, no all-call.</p>
+          </div>
+        </div>
+        ${phoneTestGridHtml()}
+        <div id="phone-test-msg"></div>
+      </div>
       <div class="panel stack">
         <div class="panel-head">
           <div>
@@ -1205,6 +1276,7 @@ function wireOverviewSection() {
 function wireTestSection() {
   $("#speaker-check")?.addEventListener("click", () => void runSpeakerCheck($("#check-msg")));
   $("#refresh-test-notify")?.addEventListener("click", () => void refreshTestNotifyPanel());
+  wirePhoneTestButtons();
   void refreshTestNotifyPanel();
 }
 

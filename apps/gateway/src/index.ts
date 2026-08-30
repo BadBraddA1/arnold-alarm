@@ -143,6 +143,26 @@ async function runAction(
     );
     return;
   }
+  if (actionId.startsWith("test.phone:")) {
+    const ext = actionId.slice("test.phone:".length).trim();
+    const { testCallDeskPhone } = await import("./pa-sip.js");
+    const result = await testCallDeskPhone(ext, {
+      requestedBy: options.requestedBy,
+      playId: options.playId,
+    });
+    const row = result.extensions[0];
+    const summary = row ? `${row.ext}:${row.status}` : "unknown";
+    console.log(`[play] phone test — ${summary}`);
+    if (row?.status === "failed") {
+      throw Object.assign(new Error(row.error || "Phone test call failed"), { status: 500 });
+    }
+    if (row?.status === "no_answer") {
+      throw Object.assign(new Error("No answer — pick up the desk phone and try again."), {
+        status: 504,
+      });
+    }
+    return;
+  }
   const def = actions[actionId];
   if (!def) {
     throw Object.assign(new Error(`Unknown action: ${actionId}`), { status: 404 });

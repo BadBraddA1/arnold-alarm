@@ -425,3 +425,31 @@ button, input, select { font: inherit; }
   }
   .desk-foot .who { display: none; }
 }
+
+.phone-test-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr));
+  gap: 0.55rem;
+}
+
+.phone-test-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  text-align: left;
+  min-height: 3.25rem;
+}
+
+.phone-test-btn.is-busy {
+  opacity: 0.65;
+  pointer-events: none;
+}
+
+.phone-test-label {
+  font-weight: 600;
+}
+
+.phone-test-ext {
+  font-size: 0.8rem;
+}

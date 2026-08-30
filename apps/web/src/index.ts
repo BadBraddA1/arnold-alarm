@@ -526,7 +526,7 @@ app.post("/api/admin/play", async (c) => {
     typeof body.loop === "boolean" ? body.loop : undefined,
   );
 
-  if (!(await getSystemArmed(c.env))) {
+  if (!(await getSystemArmed(c.env)) && !actionId.startsWith("test.phone:")) {
     return c.json(
       await holdUnarmedPlay(
         c.env,

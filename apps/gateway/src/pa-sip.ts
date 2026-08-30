@@ -62,7 +62,10 @@ type SipDialog = {
     sendQueue?: unknown[];
     remoteAddress?: string | null;
     remotePort?: number | null;
+    natAddress?: string | null;
+    natPort?: number | null;
     active?: boolean;
+    stats?: { packetsSent?: number };
     getRemote?: () => { address?: string | null; port?: number | null };
   };
   request?: {
@@ -70,6 +73,10 @@ type SipDialog = {
     headers?: Record<string, unknown>;
   };
   remoteUri?: string;
+  remoteSdp?: {
+    c?: { address?: string };
+    m?: Array<{ media?: string; port?: number; c?: { address?: string } }>;
+  };
 };
 
 type SipStackHandle = {
@@ -482,6 +489,10 @@ export async function notifyDeskPhonesOfTest(meta?: {
         patchExtReport(report, ext, { status: "playing_prompt" });
         await publishTestNotifyReport(report);
 
+        // Lead with a beep so the callee knows audio is live before the spoken prompt.
+        await playToPhone(dialog, earpieceBeepPcm());
+        await sleep(350);
+
         let digit: string | null = null;
         if (pcm.length) {
           digit = await playPromptUntilDigit(dialog, pcm, dtmfMs);
@@ -535,6 +546,114 @@ export async function notifyDeskPhonesOfTest(meta?: {
       `[test-notify] delay ${report.delayMinutes}m requested by ${report.delayedBy.join(", ")}`,
     );
   }
+  report.state = "complete";
+  report.finishedAt = Date.now();
+  await publishTestNotifyReport(report);
+  return report;
+}
+
+function loadPhoneTestPromptPcm(): Buffer {
+  const fromEnv = process.env.TEST_PHONE_CALL_PROMPT;
+  if (fromEnv && existsSync(fromEnv)) return readFileSync(fromEnv);
+  const pcm = loadAssetPcm("pa-sip-phone-test.pcm");
+  if (pcm.length) return pcm;
+  return earpieceBeepPcm();
+}
+
+/** Ring one desk phone with a short beep + test clip — no horns, no press-0 flow. */
+export async function testCallDeskPhone(
+  ext: string,
+  meta?: { requestedBy?: string; playId?: string },
+): Promise<TestNotifyReport> {
+  const normalized = ext.trim();
+  if (!/^\d{3,5}$/.test(normalized)) {
+    throw Object.assign(new Error(`Invalid extension: ${ext}`), { status: 400 });
+  }
+
+  const labels = parseTestNotifyLabels();
+  const label = labels[normalized] || normalized;
+  const report = createTestNotifyReport({
+    exts: [normalized],
+    labels: { ...labels, [normalized]: label },
+    requestedBy: meta?.requestedBy,
+    playId: meta?.playId,
+    notifyOnly: true,
+    delayMinutes: 0,
+  });
+  report.promptReady = true;
+  await publishTestNotifyReport(report);
+
+  if (!stack) {
+    patchExtReport(report, normalized, {
+      status: "failed",
+      error: "sip_stack_unavailable",
+      finishedAt: Date.now(),
+    });
+    report.state = "complete";
+    report.finishedAt = Date.now();
+    await publishTestNotifyReport(report);
+    return report;
+  }
+
+  const talkHost = (process.env.PA_TALK_HOST || "192.168.1.1").trim();
+  const ringMs = Math.max(8_000, Number(process.env.TEST_PHONE_RING_MS || 20_000));
+  const caller = testNotifyCallIdentity();
+  const uri = `sip:${normalized}@${talkHost}`;
+  let dialog: SipDialog | null = null;
+
+  console.log(`[phone-test] calling ${normalized} (${label}) via ${talkHost}`);
+
+  try {
+    patchExtReport(report, normalized, { status: "ringing", ringStartedAt: Date.now() });
+    await publishTestNotifyReport(report);
+
+    const callP = stack.call(uri, {
+      fromUri: caller.fromUri,
+      payloadType: 0,
+      ...(caller.credentials ? { credentials: caller.credentials } : {}),
+    });
+    dialog = await Promise.race([
+      callP,
+      sleep(ringMs).then(() => {
+        throw new Error(`no answer within ${Math.round(ringMs / 1000)}s`);
+      }),
+    ]);
+
+    patchExtReport(report, normalized, { status: "answered", answeredAt: Date.now() });
+    await publishTestNotifyReport(report);
+
+    await prepareDeskPhoneAudio(dialog);
+
+    patchExtReport(report, normalized, { status: "playing_prompt" });
+    await publishTestNotifyReport(report);
+
+    await playToPhone(dialog, earpieceBeepPcm());
+    await sleep(250);
+    await playToPhone(dialog, loadPhoneTestPromptPcm());
+    await sleep(200);
+    await hangUpWithGoodbye(dialog);
+
+    patchExtReport(report, normalized, {
+      status: "acknowledged",
+      finishedAt: Date.now(),
+    });
+    console.log(`[phone-test] ${normalized} (${label}) ok`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const noAnswer = /no answer/i.test(message);
+    patchExtReport(report, normalized, {
+      status: noAnswer ? "no_answer" : "failed",
+      error: message,
+      finishedAt: Date.now(),
+    });
+    console.warn(`[phone-test] ${normalized} failed:`, message);
+    try {
+      if (dialog) await hangUpWithGoodbye(dialog);
+    } catch {
+      /* ignore */
+    }
+  }
+
   report.state = "complete";
   report.finishedAt = Date.now();
   await publishTestNotifyReport(report);
@@ -768,14 +887,20 @@ export function getPaStatus(): PaStatus {
 
 async function playToPhone(dialog: SipDialog, pcm: Buffer): Promise<void> {
   if (!pcm.length || !dialog.sendAudioPaced) return;
-  const ready = await waitForPhoneMediaReady(dialog, 6000);
+  applyRemoteSdpToRtp(dialog);
+  const ready = await waitForPhoneMediaReady(dialog, 8000);
   if (!ready) {
     console.warn("[pa] playToPhone — RTP remote never became ready; audio may be silent");
   }
+  const sentBefore = dialog.rtpSession?.stats?.packetsSent ?? 0;
   try {
     await dialog.sendAudioPaced(pcm);
   } catch (err) {
     console.error("[pa] sendAudioPaced failed", err);
+  }
+  const sentAfter = dialog.rtpSession?.stats?.packetsSent ?? 0;
+  if (sentAfter <= sentBefore) {
+    console.warn(`[pa] playToPhone — no RTP packets sent (${sentBefore}→${sentAfter})`);
   }
 }
 
@@ -783,46 +908,84 @@ function getRtpRemote(dialog: SipDialog): { address?: string | null; port?: numb
   const rtp = dialog.rtpSession;
   if (!rtp) return {};
   if (typeof rtp.getRemote === "function") return rtp.getRemote();
+  if (rtp.natAddress && rtp.natPort) return { address: rtp.natAddress, port: rtp.natPort };
   return { address: rtp.remoteAddress, port: rtp.remotePort };
+}
+
+/** UniFi Talk often returns c=0.0.0.0 — anchor media on the Talk console IP. */
+function applyRemoteSdpToRtp(dialog: SipDialog): boolean {
+  const rtp = dialog.rtpSession;
+  const sdp = dialog.remoteSdp;
+  if (!rtp || !sdp?.m?.length) return false;
+
+  const talkHost = (process.env.PA_TALK_HOST || "192.168.1.1").trim();
+  for (const m of sdp.m) {
+    if (m.media !== "audio" || !m.port) continue;
+    let addr = m.c?.address || sdp.c?.address || talkHost;
+    if (!addr || addr === "0.0.0.0") addr = talkHost;
+    rtp.remoteAddress = addr;
+    rtp.remotePort = m.port;
+    console.log(`[pa] outbound RTP → ${addr}:${m.port}`);
+    return true;
+  }
+  return false;
+}
+
+async function waitForInboundRtp(
+  dialog: SipDialog,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (getRtpRemote(dialog).address && getRtpRemote(dialog).port) return true;
+  return new Promise((resolve) => {
+    const done = (ok: boolean) => {
+      clearTimeout(timer);
+      dialog.removeListener?.("audio", onPkt);
+      resolve(ok);
+    };
+    const onPkt = () => {
+      const { address, port } = getRtpRemote(dialog);
+      if (address && port) done(true);
+    };
+    dialog.on("audio", onPkt);
+    const timer = setTimeout(() => done(Boolean(getRtpRemote(dialog).address)), timeoutMs);
+  });
 }
 
 /** Outbound desk calls: wait until Talk has given us a media target before streaming TTS. */
 async function waitForPhoneMediaReady(
   dialog: SipDialog,
-  timeoutMs = 5000,
+  timeoutMs = 8000,
 ): Promise<boolean> {
+  applyRemoteSdpToRtp(dialog);
+
   const hasRemote = () => {
     const { address, port } = getRtpRemote(dialog);
     return Boolean(address && port);
   };
   if (hasRemote()) return true;
 
-  await new Promise<void>((resolve) => {
-    const done = () => resolve();
-    const onReady = () => {
-      if (hasRemote()) done();
-    };
-    dialog.on("ready", onReady);
-    const poll = setInterval(() => {
-      if (hasRemote()) {
-        clearInterval(poll);
-        dialog.removeListener?.("ready", onReady);
-        done();
-      }
-    }, 50);
-    setTimeout(() => {
-      clearInterval(poll);
-      dialog.removeListener?.("ready", onReady);
-      done();
-    }, timeoutMs);
-  });
+  await waitForInboundRtp(dialog, Math.min(timeoutMs, 3000));
+  if (hasRemote()) return true;
+
+  applyRemoteSdpToRtp(dialog);
+  if (hasRemote()) return true;
+
+  // Some mobile endpoints need an outbound RTP kick before symmetric learn works.
+  const rtp = dialog.rtpSession;
+  if (rtp?.remoteAddress && rtp.remotePort && dialog.sendAudioPaced) {
+    try {
+      await dialog.sendAudioPaced(earpieceBeepPcm());
+    } catch {
+      /* ignore */
+    }
+    await waitForInboundRtp(dialog, 2000);
+  }
+
+  if (hasRemote()) return true;
 
   const { address, port } = getRtpRemote(dialog);
-  if (!address || !port) {
-    console.warn(`[pa] phone RTP remote not ready (addr=${address || "?"} port=${port || "?"})`);
-    return false;
-  }
-  return true;
+  console.warn(`[pa] phone RTP remote not ready (addr=${address || "?"} port=${port || "?"})`);
+  return false;
 }
 
 function testNotifyCallIdentity(): {
@@ -851,11 +1014,10 @@ function testNotifyCallIdentity(): {
 }
 
 async function prepareDeskPhoneAudio(dialog: SipDialog): Promise<void> {
+  applyRemoteSdpToRtp(dialog);
   const settleMs = Math.max(800, Number(process.env.TEST_NOTIFY_SETTLE_MS || 1500));
-  await waitForPhoneMediaReady(dialog, 6000);
+  await waitForPhoneMediaReady(dialog, 8000);
   if (settleMs) await sleep(settleMs);
-  await playToPhone(dialog, earpieceBeepPcm());
-  await sleep(350);
 }
 
 /** Stop in-progress earpiece playback so DTMF can barge in. */
