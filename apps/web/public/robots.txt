@@ -1,9 +1,19 @@
-# Staff-only — do not index or scrape.
+# Staff-only — do not index, scrape, or archive.
 # Note: Cloudflare may prepend managed AI rules above this file.
 # Our policy for these hostnames is: disallow everything.
 
 User-agent: *
 Content-Signal: search=no, ai-input=no, ai-train=no, use=immediate
+Disallow: /
+
+# Wayback Machine / Internet Archive
+User-agent: ia_archiver
+Disallow: /
+
+User-agent: archive.org_bot
+Disallow: /
+
+User-agent: special_archiver
 Disallow: /
 
 User-agent: GPTBot
