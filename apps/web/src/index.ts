@@ -36,6 +36,8 @@ import {
   type TestNotifyReportRow,
   updateAuditStatus,
   updatePinScopes,
+  updatePinLabel,
+  setPinMustChange,
 } from "./db";
 import {
   actionAllowed,
@@ -1107,16 +1109,58 @@ app.patch("/api/admin/pins", async (c) => {
     id?: string;
     active?: boolean;
     scopes?: string[];
+    label?: string;
+    resetPin?: string;
+    temp?: boolean;
+    mustChangePin?: boolean;
   };
   if (!body.id) return c.json({ error: "id required" }, 400);
+
+  const row = await getPinById(c.env, body.id);
+  if (!row) return c.json({ error: "PIN not found" }, 404);
+
+  if (body.id === session.pinId && body.active === false) {
+    return c.json({ error: "You cannot revoke your own PIN while signed in." }, 400);
+  }
+
+  if (typeof body.label === "string") {
+    const label = body.label.trim();
+    if (!label) return c.json({ error: "label required" }, 400);
+    await updatePinLabel(c.env, body.id, label);
+  }
 
   if (Array.isArray(body.scopes)) {
     const scopes = normalizeScopes(body.scopes);
     if (!scopes.filter((s) => s !== "remote").length) {
       return c.json({ error: "at least one of bells/evacuate/admin required" }, 400);
     }
+    if (body.id === session.pinId && !scopes.includes("admin")) {
+      return c.json({ error: "You cannot remove admin from your own PIN while signed in." }, 400);
+    }
     await updatePinScopes(c.env, body.id, scopes);
   }
+
+  if (typeof body.resetPin === "string" || body.temp === true) {
+    const temp = !!body.temp;
+    let pin = (body.resetPin ?? "").replace(/\D/g, "");
+    if (temp && !pin) pin = randomTempPin();
+    if (!/^\d{6}$/.test(pin)) {
+      return c.json({ error: "6-digit PIN required for reset" }, 400);
+    }
+    const pinHash = await bcrypt.hash(pin, 10);
+    await setPinHash(c.env, body.id, pinHash, temp || !!body.mustChangePin);
+    if (!row.active) await setPinActive(c.env, body.id, true);
+    return c.json({
+      ok: true,
+      tempPin: temp ? pin : undefined,
+      mustChangePin: temp || !!body.mustChangePin,
+    });
+  }
+
+  if (typeof body.mustChangePin === "boolean") {
+    await setPinMustChange(c.env, body.id, body.mustChangePin);
+  }
+
   if (typeof body.active === "boolean") {
     await setPinActive(c.env, body.id, body.active);
   }

@@ -258,6 +258,18 @@ export async function updatePinScopes(env: Env, id: string, scopes: string[]) {
     .run();
 }
 
+export async function updatePinLabel(env: Env, id: string, label: string) {
+  await env.DB.prepare(`UPDATE alarm_pins SET label = ? WHERE id = ?`)
+    .bind(label, id)
+    .run();
+}
+
+export async function setPinMustChange(env: Env, id: string, mustChangePin: boolean) {
+  await env.DB.prepare(`UPDATE alarm_pins SET must_change_pin = ? WHERE id = ?`)
+    .bind(mustChangePin ? 1 : 0, id)
+    .run();
+}
+
 export async function insertAudit(
   env: Env,
   input: {

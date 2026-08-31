@@ -453,3 +453,58 @@ button, input, select { font: inherit; }
 .phone-test-ext {
   font-size: 0.8rem;
 }
+
+.scope-pill {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  margin: 0.1rem 0.2rem 0.1rem 0;
+  background: color-mix(in oklab, var(--line) 70%, transparent);
+  color: var(--ink);
+}
+
+.scope-pill--bells { background: color-mix(in oklab, var(--ok) 25%, transparent); }
+.scope-pill--evacuate { background: color-mix(in oklab, var(--danger) 22%, transparent); }
+.scope-pill--admin { background: color-mix(in oklab, var(--accent) 28%, transparent); }
+.scope-pill--remote { background: color-mix(in oklab, #6b8cff 25%, transparent); }
+
+.pin-roster { gap: 0.65rem; }
+
+.pin-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.85rem 1rem;
+  background: color-mix(in oklab, var(--bg-panel) 90%, transparent);
+}
+
+.pin-card--revoked { opacity: 0.72; }
+
+.pin-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.pin-card-scopes { margin-top: 0.35rem; }
+
+.pin-card-meta { font-size: 0.8rem; text-align: right; }
+
+.pin-card-actions { margin-top: 0.55rem; gap: 0.35rem; flex-wrap: wrap; }
+
+.pin-scope-checks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: 0.35rem 0.75rem;
+}
+
+.scope-check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.88rem;
+}
+
+.pin-presets { flex-wrap: wrap; gap: 0.35rem; }

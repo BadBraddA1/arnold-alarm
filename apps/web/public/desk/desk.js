@@ -27,6 +27,7 @@ let state = {
   _speakersTimer: null,
   _pollTimer: null,
   _testNotifyPoll: null,
+  _pinEditId: null,
 };
 
 let idleTimer = null;
@@ -865,42 +866,110 @@ function sectionActivityHtml(events) {
     </div>`;
 }
 
+const PIN_SCOPE_META = {
+  bells: { label: "Class bells", hint: "Ring first/second bell" },
+  evacuate: { label: "Evacuation", hint: "Code Red / Blue / All clear" },
+  admin: { label: "Admin", hint: "Arm, staff PINs, speaker mgmt" },
+  remote: { label: "Remote play", hint: "Queue plays off campus" },
+};
+
+function scopePills(scopes) {
+  const list = scopes || [];
+  if (!list.length) return `<span class="muted">None</span>`;
+  return list
+    .map((s) => {
+      const meta = PIN_SCOPE_META[s] || { label: s };
+      return `<span class="scope-pill scope-pill--${escapeHtml(s)}" title="${escapeHtml(meta.hint || "")}">${escapeHtml(meta.label || s)}</span>`;
+    })
+    .join("");
+}
+
+function scopeChecks(namePrefix, scopes, idPrefix) {
+  return Object.entries(PIN_SCOPE_META)
+    .map(([key, meta]) => {
+      const checked = (scopes || []).includes(key) ? " checked" : "";
+      return `<label class="scope-check"><input type="checkbox" name="${escapeHtml(namePrefix)}-${key}" data-scope="${key}"${checked} /> ${escapeHtml(meta.label)}</label>`;
+    })
+    .join("");
+}
+
+function pinStatusLabel(p, self) {
+  if (!p.active) return "Revoked";
+  if (p.mustChangePin) return "Temp — must change PIN";
+  if (self) return "Active · you";
+  return "Active";
+}
+
 function sectionStaffHtml(pins) {
+  const selfId = state.session?.pinId;
   return `
     <div class="stack">
       <div class="panel">
-        <div class="panel-head"><div><h2>Add staff PIN</h2><p>Hashed in D1 — grant Remote play sparingly</p></div></div>
+        <div class="panel-head"><div><h2>Add staff PIN</h2><p>Permissions are enforced on every play and admin action.</p></div></div>
+        <div class="pin-presets row" style="margin-bottom:0.75rem">
+          <span class="muted" style="font-size:0.85rem;align-self:center">Quick presets:</span>
+          <button type="button" class="btn btn-ghost btn-sm" data-pin-preset="bells">Bells only</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-pin-preset="evacuate">Evac leader</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-pin-preset="admin">Full admin</button>
+        </div>
         <form class="stack" id="pin-form">
           <div class="field"><label>Label</label><input name="label" required placeholder="Office desk" /></div>
           <div class="field">
             <label>6-digit PIN <span class="muted">(blank for temp — auto-generated)</span></label>
             <input name="pin" inputmode="numeric" maxlength="6" pattern="\\d{6}" placeholder="Optional for temp" />
           </div>
-          <div class="checks">
-            <label><input type="checkbox" name="bells" checked /> Class bells</label>
-            <label><input type="checkbox" name="evacuate" /> Evacuation</label>
-            <label><input type="checkbox" name="admin" checked /> Admin</label>
-            <label><input type="checkbox" name="remote" /> Remote play</label>
-            <label><input type="checkbox" name="temp" /> Temp PIN</label>
+          <div class="checks pin-scope-checks" id="pin-form-scopes">
+            ${scopeChecks("add", ["bells", "admin"], "add")}
           </div>
+          <label class="scope-check"><input type="checkbox" name="temp" /> Temp PIN (must change on first login)</label>
           <button class="btn btn-primary" type="submit">Add PIN</button>
           <div id="pin-msg"></div>
         </form>
       </div>
-      <div class="panel audit-table-wrap">
-        <table class="table">
-          <thead><tr><th>Label</th><th>Scopes</th><th>Status</th><th></th></tr></thead>
-          <tbody>${(pins || [])
-            .map(
-              (p) => `<tr>
-                <td>${escapeHtml(p.label)}</td>
-                <td>${escapeHtml((p.scopes || []).join(", "))}</td>
-                <td>${!p.active ? "Revoked" : p.mustChangePin ? "Temp — awaiting change" : "Active"}</td>
-                <td><button type="button" class="btn btn-ghost btn-sm" data-toggle="${escapeHtml(p.id)}" data-active="${p.active ? "1" : "0"}">${p.active ? "Revoke" : "Restore"}</button></td>
-              </tr>`,
-            )
-            .join("")}</tbody>
-        </table>
+      <div class="panel">
+        <div class="panel-head"><div><h2>Staff roster</h2><p>Edit scopes, rename, reset PIN, or revoke access.</p></div></div>
+        <div class="stack pin-roster">${(pins || [])
+          .map((p) => {
+            const self = p.id === selfId;
+            const open = state._pinEditId === p.id;
+            return `<div class="pin-card ${p.active ? "" : "pin-card--revoked"} ${open ? "pin-card--open" : ""}" data-pin-id="${escapeHtml(p.id)}">
+              <div class="pin-card-head">
+                <div>
+                  <strong>${escapeHtml(p.label)}</strong>${self ? ' <span class="scope-pill scope-pill--admin">You</span>' : ""}
+                  <div class="pin-card-scopes">${scopePills(p.scopes)}</div>
+                </div>
+                <div class="pin-card-meta muted">${pinStatusLabel(p, self)}${p.created_at ? ` · ${escapeHtml(formatCentral(p.created_at))}` : ""}</div>
+              </div>
+              <div class="row pin-card-actions">
+                <button type="button" class="btn btn-ghost btn-sm" data-pin-edit="${escapeHtml(p.id)}">${open ? "Close" : "Edit"}</button>
+                ${
+                  p.active
+                    ? `<button type="button" class="btn btn-ghost btn-sm" data-toggle="${escapeHtml(p.id)}" data-active="1"${self ? " disabled title=\"Can't revoke your own PIN while signed in\"" : ""}>Revoke</button>`
+                    : `<button type="button" class="btn btn-ghost btn-sm" data-toggle="${escapeHtml(p.id)}" data-active="0">Restore</button>`
+                }
+              </div>
+              ${
+                open
+                  ? `<form class="stack pin-edit-form" data-pin-form="${escapeHtml(p.id)}" style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid var(--line)">
+                <div class="field"><label>Display name</label><input name="label" value="${escapeHtml(p.label)}" required /></div>
+                <div class="field"><label>Permissions</label><div class="checks pin-scope-checks">${scopeChecks("edit", p.scopes, p.id)}</div></div>
+                <div class="field">
+                  <label>Reset PIN <span class="muted">(leave blank to keep current)</span></label>
+                  <input name="resetPin" inputmode="numeric" maxlength="6" pattern="\\d{6}" placeholder="New 6-digit PIN" autocomplete="off" />
+                </div>
+                <label class="scope-check"><input type="checkbox" name="tempReset" /> Generate temp PIN (shown once) if blank</label>
+                <label class="scope-check"><input type="checkbox" name="mustChange"${p.mustChangePin ? " checked" : ""} /> Require PIN change on next login</label>
+                <div class="row">
+                  <button type="submit" class="btn btn-primary btn-sm">Save changes</button>
+                </div>
+                <div class="pin-edit-msg muted" data-pin-edit-msg="${escapeHtml(p.id)}" style="min-height:1.1em"></div>
+              </form>`
+                  : ""
+              }
+            </div>`;
+          })
+          .join("") || `<p class="muted" style="margin:0">No staff PINs yet.</p>`}
+        </div>
       </div>
     </div>`;
 }
@@ -1009,7 +1078,7 @@ function topbarHtml() {
     overview: "Live campus status, speakers, and recent activity",
     speakers: "Per-horn telemetry, bell volume, and tone tests",
     activity: "Full audit trail for every command",
-    staff: "Create and revoke staff PINs",
+    staff: "Create, edit scopes, reset PINs, and revoke staff access",
     test: "Desk notify board — who was rung and how each phone responded",
     bells: "Play or schedule class bells from the desk",
     system: "Arm state, speaker check, and mobile app link",
@@ -1186,18 +1255,46 @@ function wireSpeakersSection() {
   }, 10_000);
 }
 
+function readScopesFromForm(form, prefix) {
+  const scopes = [];
+  form.querySelectorAll(`[data-scope]`).forEach((el) => {
+    if (el.checked) scopes.push(el.getAttribute("data-scope"));
+  });
+  return scopes;
+}
+
+function applyPinPreset(preset) {
+  const form = $("#pin-form");
+  if (!form) return;
+  const map = {
+    bells: { bells: true, evacuate: false, admin: false, remote: false },
+    evacuate: { bells: true, evacuate: true, admin: false, remote: false },
+    admin: { bells: true, evacuate: true, admin: true, remote: false },
+  };
+  const set = map[preset];
+  if (!set) return;
+  form.querySelectorAll("[data-scope]").forEach((el) => {
+    const key = el.getAttribute("data-scope");
+    el.checked = !!set[key];
+  });
+}
+
 function wireStaffSection() {
+  document.querySelectorAll("[data-pin-preset]").forEach((btn) => {
+    btn.addEventListener("click", () => applyPinPreset(btn.dataset.pinPreset));
+  });
+
   $("#pin-form")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const scopes = [];
-    if (fd.get("bells")) scopes.push("bells");
-    if (fd.get("evacuate")) scopes.push("evacuate");
-    if (fd.get("admin")) scopes.push("admin");
-    if (fd.get("remote")) scopes.push("remote");
+    const scopes = readScopesFromForm(e.target, "add");
     const temp = !!fd.get("temp");
     const pin = String(fd.get("pin") || "").replace(/\D/g, "");
     const msg = $("#pin-msg");
+    if (!scopes.filter((s) => s !== "remote").length) {
+      if (msg) msg.innerHTML = `<div class="error-banner">Pick at least one of Class bells, Evacuation, or Admin.</div>`;
+      return;
+    }
     if (!temp && !/^\d{6}$/.test(pin)) {
       if (msg) msg.innerHTML = `<div class="error-banner">Enter a 6-digit PIN or check Temp PIN.</div>`;
       return;
@@ -1212,15 +1309,68 @@ function wireStaffSection() {
     }
     if (data.tempPin && msg) {
       msg.innerHTML = `<div class="success-banner">Temp PIN for <strong>${escapeHtml(data.label)}</strong>: <strong style="letter-spacing:0.12em">${escapeHtml(data.tempPin)}</strong> — copy now.</div>`;
+    } else if (msg) {
+      msg.innerHTML = `<div class="success-banner">PIN added for ${escapeHtml(data.label || String(fd.get("label")))}.</div>`;
     }
+    state._pinEditId = null;
     await renderSection("staff");
   });
+
+  document.querySelectorAll("[data-pin-edit]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.pinEdit;
+      state._pinEditId = state._pinEditId === id ? null : id;
+      await renderSection("staff");
+    });
+  });
+
+  document.querySelectorAll("[data-pin-form]").forEach((form) => {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const id = form.dataset.pinForm;
+      const fd = new FormData(form);
+      const msgEl = form.querySelector(`[data-pin-edit-msg="${id}"]`);
+      const scopes = readScopesFromForm(form, "edit");
+      if (!scopes.filter((s) => s !== "remote").length) {
+        if (msgEl) msgEl.innerHTML = `<span class="error-banner" style="display:block">Pick at least one of Class bells, Evacuation, or Admin.</span>`;
+        return;
+      }
+      const body = {
+        id,
+        label: String(fd.get("label") || "").trim(),
+        scopes,
+        mustChangePin: !!fd.get("mustChange"),
+      };
+      const resetPin = String(fd.get("resetPin") || "").replace(/\D/g, "");
+      if (resetPin) body.resetPin = resetPin;
+      else if (fd.get("tempReset")) body.temp = true;
+
+      const { res, data } = await api("/api/admin/pins", { method: "PATCH", body: JSON.stringify(body) });
+      if (!res.ok) {
+        if (msgEl) msgEl.innerHTML = `<span class="error-banner" style="display:block">${escapeHtml(data.error || "Save failed")}</span>`;
+        return;
+      }
+      if (data.tempPin && msgEl) {
+        msgEl.innerHTML = `<span class="success-banner" style="display:block">New temp PIN: <strong style="letter-spacing:0.12em">${escapeHtml(data.tempPin)}</strong> — copy now.</span>`;
+      } else if (msgEl) {
+        msgEl.innerHTML = `<span class="success-banner" style="display:block">Saved.</span>`;
+      }
+      state.pins = await loadPins();
+      setTimeout(() => void renderSection("staff"), data.tempPin ? 8000 : 1200);
+    });
+  });
+
   document.querySelectorAll("[data-toggle]").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      await api("/api/admin/pins", {
+      const { res, data } = await api("/api/admin/pins", {
         method: "PATCH",
         body: JSON.stringify({ id: btn.dataset.toggle, active: btn.dataset.active !== "1" }),
       });
+      if (!res.ok) {
+        alert(data.error || "Could not update PIN");
+        return;
+      }
+      state._pinEditId = null;
       await renderSection("staff");
     });
   });

@@ -60,9 +60,11 @@ Secrets (already set in prod):
 
 Vars in `wrangler.jsonc`: `GATEWAY_URL`, `BELL_ACTIONS`, `EVACUATE_ACTION`.
 
-PIN admin: sign in with an admin-scoped PIN → **PIN admin**.
+PIN admin: sign in with an admin-scoped PIN → **PIN admin** (mobile) or **Staff PINs** on `/desk/`.
 
-**Temp PINs:** check **Temp PIN** when adding someone. Leave the PIN blank to auto-generate (shown once). On first login they must set their own 6-digit PIN before bells/emergency work. Status shows “Temp — awaiting change” until they do.
+**Staff PINs (desk):** add with scope presets (bells only, evac leader, full admin). Each person can be **edited** — rename, toggle Class bells / Evacuation / Admin / Remote play, **reset PIN** (manual or one-time temp), require change on next login, **revoke** or restore. You cannot revoke or demote your own PIN while signed in.
+
+**Temp PINs:** check **Temp PIN** when adding someone. Leave the PIN blank to auto-generate (shown once). On first login they must set their own 6-digit PIN before bells/emergency work. Status shows “Temp — must change PIN” until they do.
 
 ## Pi gateway
 
