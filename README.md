@@ -230,3 +230,27 @@ One-time on the Pi (SSH or keyboard): `bash ~/arnold-alarm/scripts/pi-agent-back
 3. Same `PLAY_JWT_SECRET` as the Worker.
 
 Remote play also needs Worker secret `GATEWAY_POLL_SECRET` matching the Pi, and the PIN’s **remote** scope checked in PIN admin.
+
+## Physical fobs (Alarm Manager → Pi)
+
+Move fob alarms off direct Protect ringtones (old path) onto the Pi so horns use **talkback** — same clips as the phone app. Fobs stay usable when staff cannot reach a phone in time; no PIN or unlock required.
+
+1. On the Pi, set a webhook secret in `~/.config/arnold-alarm/gateway.env`:
+   ```bash
+   FOB_WEBHOOK_SECRET="$(openssl rand -hex 24)"
+   ```
+   Restart: `sudo systemctl restart arnold-alarm-gateway`
+
+2. In **Protect → Alarm Manager**, edit each fob rule. **Remove** the old “Play audio on speaker” action. **Add** a **Webhook** action with URL (Pi LAN IP `192.168.1.204`):
+
+   | Fob | Webhook URL |
+   |---|---|
+   | Code Red | `http://192.168.1.204:8787/fob/red?secret=YOUR_SECRET&label=Lobby%20fob` |
+   | Code Blue | `http://192.168.1.204:8787/fob/blue?secret=YOUR_SECRET&label=…` |
+   | All clear | `http://192.168.1.204:8787/fob/clear?secret=YOUR_SECRET&label=…` |
+
+   Change `label=` to identify which fob fired (shows in desk Activity). Use a unique secret per site — never commit it.
+
+3. **Test empty building:** press each fob once; desk Activity should show `Fob · red` (or your label) with status **played**. Code Red/Blue loop until All clear.
+
+Fobs **bypass unarmed** by default (`FOB_BYPASS_ARM=1`) — emergency hardware always reaches speakers. Phone/app remains primary when you have time (countdown, audit by PIN, etc.).

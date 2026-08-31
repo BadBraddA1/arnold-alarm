@@ -942,6 +942,100 @@ app.post("/api/gateway/telemetry", async (c) => {
   return c.json({ ok: true });
 });
 
+/** Pi reports a physical fob / Alarm Manager webhook trigger for audit + evac phase. */
+app.post("/api/gateway/fob", async (c) => {
+  if (!gatewayAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
+  await touchGatewayHeartbeat(c.env, "fob");
+  const body = (await c.req.json().catch(() => ({}))) as {
+    id?: string;
+    code?: string;
+    actionId?: string;
+    label?: string;
+    ok?: boolean;
+    error?: string;
+  };
+  const id = body.id?.trim() || crypto.randomUUID();
+  const actionId = body.actionId?.trim();
+  if (!actionId) return c.json({ error: "actionId required" }, 400);
+  const label = (body.label || "Physical fob").trim().slice(0, 120);
+
+  if (body.ok === false) {
+    await insertAudit(c.env, {
+      id,
+      actionId,
+      label,
+      pinId: "__fob__",
+      mode: "fob",
+      status: "error",
+      detail: body.error || body.code || "fob play failed",
+    });
+    await publishSystemEvent(c.env, "activity", {
+      id,
+      actionId,
+      status: "error",
+      at: Date.now(),
+    });
+    return c.json({ ok: true, recorded: true });
+  }
+
+  if (actionId === "__all_clear__" || actionId === "evacuate.code_green") {
+    const cleared = await clearEvacCode(c.env, label);
+    if (!cleared.ok) {
+      await insertAudit(c.env, {
+        id,
+        actionId: "__all_clear__",
+        label,
+        pinId: "__fob__",
+        mode: "fob",
+        status: "error",
+        detail: cleared.error,
+      });
+      return c.json({ ok: true, recorded: true, evacError: cleared.error });
+    }
+  } else if (evacPhaseForAction(actionId)) {
+    const started = await beginEvacCode(c.env, actionId, label);
+    if (!started.ok) {
+      await insertAudit(c.env, {
+        id,
+        actionId,
+        label,
+        pinId: "__fob__",
+        mode: "fob",
+        status: "error",
+        detail: started.error,
+      });
+      await publishSystemEvent(c.env, "activity", {
+        id,
+        actionId,
+        status: "error",
+        at: Date.now(),
+      });
+      return c.json({ ok: true, recorded: true, evacError: started.error });
+    }
+  }
+
+  await insertAudit(c.env, {
+    id,
+    actionId,
+    label,
+    pinId: "__fob__",
+    mode: "fob",
+    status: "done",
+    detail: body.code ? `fob:${body.code}` : "physical fob",
+  });
+  await publishSystemEvent(c.env, "activity", {
+    id,
+    actionId,
+    status: "done",
+    at: Date.now(),
+  });
+  return c.json({
+    ok: true,
+    recorded: true,
+    evacPhase: await getEvacPhase(c.env),
+  });
+});
+
 app.post("/api/gateway/test-notify", async (c) => {
   if (!gatewayAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
   await touchGatewayHeartbeat(c.env, "test-notify");
