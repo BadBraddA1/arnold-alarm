@@ -1082,6 +1082,73 @@ app.post("/api/gateway/fob/arm", async (c) => {
   });
 });
 
+/** Phone IVR option 5 — toggle system arm/disarm (admin PIN). */
+app.post("/api/gateway/system/toggle", async (c) => {
+  if (!gatewayAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
+  const body = (await c.req.json().catch(() => ({}))) as { pin?: string };
+  const pin = (body.pin ?? "").replace(/\D/g, "");
+  if (!/^\d{6}$/.test(pin)) {
+    return c.json({ error: "invalid_pin", message: "Enter a 6-digit PIN." }, 400);
+  }
+  const limit = await checkRateLimit(c.env, `ivr-system:${clientIp(c)}`);
+  if (!limit.allowed) {
+    return c.json({ error: "rate_limited", message: "Too many attempts." }, 429);
+  }
+  const pins = await listActivePins(c.env);
+  let matched: (typeof pins)[0] | null = null;
+  for (const row of pins) {
+    if (await bcrypt.compare(pin, row.pin_hash)) {
+      matched = row;
+      break;
+    }
+  }
+  if (!matched) {
+    return c.json({ error: "incorrect_pin", message: "Incorrect PIN." }, 401);
+  }
+  if (matched.must_change_pin) {
+    return c.json({ error: "must_change_pin", message: "Change your temp PIN in the app first." }, 403);
+  }
+  const scopes = parseScopesField(matched.scopes);
+  if (!hasScope(scopes, "admin")) {
+    return c.json(
+      { error: "not_allowed", message: "Admin access required to arm or disarm the system." },
+      403,
+    );
+  }
+  await clearRateLimit(c.env, `ivr-system:${clientIp(c)}`);
+  const nextArmed = !(await getSystemArmed(c.env));
+  await setSystemArmed(c.env, nextArmed);
+  const auditId = crypto.randomUUID();
+  await insertAudit(c.env, {
+    id: auditId,
+    actionId: nextArmed ? "__system_armed__" : "__system_unarmed__",
+    label: matched.label,
+    pinId: matched.id,
+    mode: "ivr",
+    status: "status",
+    detail: nextArmed ? "phone IVR 5" : "phone IVR 5 · plays held until re-armed",
+  });
+  await publishSystemEvent(c.env, "armed", {
+    armed: nextArmed,
+    by: matched.label,
+    at: Date.now(),
+  });
+  await publishSystemEvent(c.env, "activity", {
+    id: auditId,
+    actionId: nextArmed ? "__system_armed__" : "__system_unarmed__",
+    status: "status",
+    at: Date.now(),
+  });
+  return c.json({
+    ok: true,
+    armed: nextArmed,
+    label: matched.label,
+    message: nextArmed
+      ? "System armed — speakers will play commands."
+      : "System unarmed — commands are recorded but speakers stay silent.",
+  });
+});
+
 app.get("/api/admin/fobs", async (c) => {
   const session = c.get("session");
   if (!session?.scopes.includes("admin")) return c.json({ error: "Forbidden" }, 403);

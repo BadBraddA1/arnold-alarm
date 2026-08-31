@@ -21,7 +21,7 @@ Pi    → UniFi Protect NVR → AI speakers
 
 - Site works on cellular. **Play** needs either church Wi‑Fi (direct to Pi) or a PIN with **remote** scope (Worker queue → **Ably push** to Pi; slow D1 poll as fallback).
 - PINs live in **Cloudflare D1** (hashed). Sessions and fob leases last **3 hours** (idle sign-out at the same window).
-- **Arm / disarm:** Admins arm/disarm and run speaker check from the <strong>Admin</strong> panel. Staff can still send bells/codes while unarmed — commands are **held** (audit log) and speakers stay silent until an admin arms again. Default is armed. **Arm state + Home activity sync live across phones** via Ably (12s poll fallback if Ably is down).
+- **Arm / disarm:** Admins arm/disarm from the **Admin** panel or dial **9090** → **5** → admin PIN (toggles armed/unarmed). Staff can still send bells/codes while unarmed — commands are **held** (audit log) and speakers stay silent until an admin arms again. Default is armed. **Arm state + Home activity sync live across phones** via Ably (12s poll fallback if Ably is down).
 - Status distinguishes **queued on campus** vs **playing now**, and **Pi offline** vs **Protect unreachable**.
 - Home shows **last play** plus recent activity (Central time). PINs with only **bells** or only **evacuate** skip Home and open that panel directly (no activity log).
 
@@ -204,7 +204,7 @@ curl -s http://127.0.0.1:8787/health | jq .pa
 1. Talk → Settings → **Third-Party SIP Provider** → Custom → Pi LAN IP, UDP **5060**, **Register = No**.
 2. Prefer **Add Third-Party Device** (extension) over short codes on a trunk — Talk dials extensions more reliably than trunk DIDs.
 3. Softphone / trunk: **9099** (earpiece test), **9090** (live PA if dialed as UA). Alltree / Talk registrations:
-   - **9090** (`PA_TALK_*`, `PA_TALK_MODE=menu`) — IVR: **1** page, **2** phone test, **3** PIN alarm
+   - **9090** (`PA_TALK_*`, `PA_TALK_MODE=menu`) — IVR: **1** page, **2** phone test, **3** PIN alarm, **4** arm fob, **5** system arm/disarm (admin PIN)
    - **8080** (`PA_PAGE_USER` / `PA_PAGE_PASS`, mode `pa`) — straight to campus page (beep → talk)
 
 Env (`~/.config/arnold-alarm/gateway.env`): `PA_ENABLED=1`, `PA_EXT=9090`, `PA_TEST_EXT=9099`, `PA_SPEAKER_IDS=…`, `GATEWAY_POLL_SECRET`, `PA_TALK_HOST` / `PA_TALK_USER` / `PA_TALK_PASS` / `PA_TALK_MODE=menu`, and optional `PA_PAGE_USER` / `PA_PAGE_PASS` for direct paging.

@@ -764,6 +764,16 @@ function ivrFobArmUrl(): string {
   );
 }
 
+function ivrSystemToggleUrl(): string {
+  return (
+    process.env.CLOUD_SYSTEM_TOGGLE_URL ||
+    (process.env.CLOUD_POLL_URL || "https://alarm.arnoldcoc.org/api/gateway/poll").replace(
+      /\/api\/gateway\/poll\/?$/,
+      "/api/gateway/system/toggle",
+    )
+  );
+}
+
 async function authorizeIvrFobArm(
   pin: string,
 ): Promise<{
@@ -813,6 +823,55 @@ async function authorizeIvrFobArm(
   }
 }
 
+async function authorizeIvrSystemToggle(
+  pin: string,
+): Promise<{
+  ok: boolean;
+  armed?: boolean;
+  label?: string;
+  error?: string;
+  status?: number;
+}> {
+  const secret = process.env.GATEWAY_POLL_SECRET || "";
+  if (!secret) return { ok: false, error: "no_gateway_secret", status: 500 };
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12_000);
+    const res = await fetch(ivrSystemToggleUrl(), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ pin }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      armed?: boolean;
+      label?: string;
+      error?: string;
+      message?: string;
+    };
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: data.error || data.message || `http_${res.status}`,
+        status: res.status,
+      };
+    }
+    return {
+      ok: true,
+      armed: data.armed,
+      label: data.label,
+    };
+  } catch (err) {
+    console.error("[pa] ivr system toggle failed", err);
+    return { ok: false, error: "network", status: 502 };
+  }
+}
+
 async function handleIvrFobArm(dialog: SipDialog): Promise<"done" | "cancel"> {
   const timeoutMs = Math.max(15_000, Number(process.env.PA_IVR_TIMEOUT_MS || 30_000));
   const pinP = collectPinDigits(dialog, timeoutMs);
@@ -842,6 +901,40 @@ async function handleIvrFobArm(dialog: SipDialog): Promise<"done" | "cancel"> {
   await playToPhone(dialog, loadAssetPcm("pa-sip-alarm-sent.pcm"));
   console.log(
     `[pa] IVR fob armed — ${auth.fobName || "fob"} until ${auth.expiresAt ? new Date(auth.expiresAt).toISOString() : "?"}`,
+  );
+  return "done";
+}
+
+async function handleIvrSystemToggle(dialog: SipDialog): Promise<"done" | "cancel"> {
+  const timeoutMs = Math.max(15_000, Number(process.env.PA_IVR_TIMEOUT_MS || 30_000));
+  const pinP = collectPinDigits(dialog, timeoutMs);
+  const pinPlay = playToPhone(dialog, loadAssetPcm("pa-sip-enter-pin.pcm"));
+  const pinRace = await Promise.race([
+    pinP.then((p) => ({ kind: "pin" as const, p })),
+    pinPlay.then(() => ({ kind: "play" as const })),
+  ]);
+  if (pinRace.kind === "pin") stopPhonePlayback(dialog);
+  const pin = pinRace.kind === "pin" ? pinRace.p : await pinP;
+  if (!pin) {
+    console.log("[pa] IVR system arm — PIN cancelled or incomplete");
+    return "cancel";
+  }
+
+  console.log("[pa] IVR system arm — authorizing");
+  const auth = await authorizeIvrSystemToggle(pin);
+  if (!auth.ok) {
+    if (auth.error === "incorrect_pin") {
+      await playToPhone(dialog, loadAssetPcm("pa-sip-bad-pin.pcm"));
+    } else {
+      await playToPhone(dialog, loadAssetPcm("pa-sip-not-allowed.pcm"));
+    }
+    return "done";
+  }
+
+  armedCache = { armed: auth.armed !== false, at: Date.now() };
+  await playToPhone(dialog, loadAssetPcm("pa-sip-alarm-sent.pcm"));
+  console.log(
+    `[pa] IVR system ${auth.armed ? "armed" : "unarmed"}${auth.label ? ` — ${auth.label}` : ""}`,
   );
   return "done";
 }
@@ -1360,7 +1453,7 @@ async function handleIvrMenu(dialog: SipDialog, speakerIds: string[]): Promise<v
   await dialog.ringing?.();
   await dialog.accept({ payloadType: 0 });
   activeCalls += 1;
-  console.log("[pa] IVR menu — waiting for DTMF (1=page, 2=test, 3=PIN alarm, 4=arm fob)");
+  console.log("[pa] IVR menu — waiting for DTMF (1=page, 2=test, 3=PIN alarm, 4=arm fob, 5=system arm/disarm)");
 
   let cleaned = false;
   const cleanup = () => {
@@ -1385,7 +1478,7 @@ async function handleIvrMenu(dialog: SipDialog, speakerIds: string[]): Promise<v
       loadMenuPromptPcm(),
       menuTimeoutMs,
     );
-    if (choice === "1" || choice === "2" || choice === "3" || choice === "4" || choice === "*" || choice === "#") {
+    if (choice === "1" || choice === "2" || choice === "3" || choice === "4" || choice === "5" || choice === "*" || choice === "#") {
       break;
     }
     if (choice === null) break; // timeout or hangup
@@ -1419,6 +1512,14 @@ async function handleIvrMenu(dialog: SipDialog, speakerIds: string[]): Promise<v
   if (choice === "4") {
     console.log("[pa] IVR → arm fob");
     await handleIvrFobArm(dialog);
+    await hangUpWithGoodbye(dialog);
+    cleanup();
+    return;
+  }
+
+  if (choice === "5") {
+    console.log("[pa] IVR → system arm/disarm");
+    await handleIvrSystemToggle(dialog);
     await hangUpWithGoodbye(dialog);
     cleanup();
     return;

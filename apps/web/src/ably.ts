@@ -58,7 +58,7 @@ export async function createGatewayTokenRequest(
 
 export async function publishSystemEvent(
   env: Env,
-  name: "armed" | "activity" | "evac" | "test-notify",
+  name: "armed" | "activity" | "evac" | "test-notify" | "fob" | "fob-pair",
   data: Record<string, unknown>,
 ): Promise<void> {
   const rest = getRest(env);

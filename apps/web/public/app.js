@@ -109,22 +109,25 @@ function startFobPairPoll() {
       state.fobPairPoll = null;
       return;
     }
-    const prevAssigned = state.fob?.assigned;
+    const wasPairing = state.fob?.pairing?.active;
     await loadFobStatus();
-    if (state.fob?.assigned && state.fob?.armed && !prevAssigned) {
-      clearInterval(state.fobPairPoll);
-      state.fobPairPoll = null;
+    if (!wasPairing) return;
+    if (state.fob?.pairing?.active) return;
+
+    clearInterval(state.fobPairPoll);
+    state.fobPairPoll = null;
+    if (state.fob?.assigned && state.fob?.armed) {
       state.message = {
         kind: "ok",
         text: `Linked ${state.fob.fobName || state.fob.assigned} — armed for 3 hours.`,
       };
-      renderHome();
-      return;
+    } else {
+      state.message = {
+        kind: "err",
+        text: "Link timed out — tap Link my fob and hold button 4 (green) again.",
+      };
     }
-    if (!state.fob?.pairing?.active) {
-      clearInterval(state.fobPairPoll);
-      state.fobPairPoll = null;
-    }
+    renderHome();
   }, 1500);
 }
 
