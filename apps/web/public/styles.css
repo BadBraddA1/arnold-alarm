@@ -80,6 +80,25 @@ button, input { font: inherit; }
   border-color: color-mix(in oklab, #ea580c 45%, var(--line));
 }
 
+.evac-pill {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0.22rem 0.5rem;
+  border-radius: 0.35rem;
+  border: 1px solid var(--line);
+}
+.evac-pill--red {
+  color: #7f1d1d;
+  background: color-mix(in oklab, #fca5a5 45%, transparent);
+  border-color: color-mix(in oklab, #dc2626 45%, var(--line));
+}
+.evac-pill--blue {
+  color: #1e3a8a;
+  background: color-mix(in oklab, #93c5fd 45%, transparent);
+  border-color: color-mix(in oklab, #2563eb 45%, var(--line));
+}
+
 .audit-item .status-pill.held {
   color: #7c2d12;
   background: color-mix(in oklab, #fdba74 28%, transparent);

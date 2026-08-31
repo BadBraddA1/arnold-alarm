@@ -363,6 +363,17 @@ function armBadge() {
     : `<span class="arm-pill arm-pill--off" title="Commands recorded; speakers silent">Unarmed</span>`;
 }
 
+function evacBadge() {
+  const phase = evacPhase();
+  if (phase === "red") {
+    return `<span class="evac-pill evac-pill--red" title="Code Red is active — use Stop &amp; All clear">Code Red active</span>`;
+  }
+  if (phase === "blue") {
+    return `<span class="evac-pill evac-pill--blue" title="Code Blue is active — use Stop &amp; All clear">Code Blue active</span>`;
+  }
+  return "";
+}
+
 /** Apply arm state from Ably/poll without requiring a full page reload. */
 function applyArmedState(armed, meta = {}) {
   if (!state.config) state.config = {};
@@ -411,6 +422,9 @@ function applyEvacPhase(phase) {
     phase === "red" || phase === "blue" || phase === "idle" ? phase : "idle";
   const prev = state.config.evacPhase || "idle";
   state.config.evacPhase = next;
+  document.querySelectorAll(".evac-pill-slot").forEach((slot) => {
+    slot.innerHTML = evacBadge();
+  });
   if (state.route === "evacuate" && prev !== next) {
     renderEvacuate();
   }
@@ -541,6 +555,7 @@ function header(label) {
         <div class="brand-row">
           <div class="brand">Arnold <span>Alarm</span></div>
           ${armBadge()}
+          <span class="evac-pill-slot">${evacBadge()}</span>
         </div>
         ${label ? `<div class="muted">${escapeHtml(label)}</div>` : ""}
         <div class="status-row" style="margin-top:0.4rem">
@@ -865,6 +880,7 @@ function actionLabel(actionId) {
   const evacs = state.config?.evacuateActions || [];
   const hit = [...bells, ...evacs].find((a) => a.id === actionId);
   if (actionId === "__all_clear__") return "Stop & All clear (Code Green ×2)";
+  if (actionId === "__evac_reset__") return "Emergency state reset";
   if (actionId === "__stop__") return "Stop speakers";
   if (actionId === "test.speakers") return "TEST ACOC — speaker check";
   if (actionId.startsWith("test.speaker:")) return "Speaker bell test";
@@ -1684,9 +1700,9 @@ function renderEvacuate() {
   const clearOpen = phase === "red" || phase === "blue";
   const phaseHint =
     phase === "red"
-      ? "Code Red active — All clear when safe."
+      ? "Campus is in a Code Red event. Red/Blue are locked — tap Stop & All clear below (plays Code Green on horns). There is no separate Code Green button."
       : phase === "blue"
-        ? "Code Blue active — All clear when safe."
+        ? "Campus is in a Code Blue event. Red/Blue are locked — tap Stop & All clear below (plays Code Green on horns). There is no separate Code Green button."
         : "10s phone alarm before campus speakers.";
 
   app.innerHTML = `

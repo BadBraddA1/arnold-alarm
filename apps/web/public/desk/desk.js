@@ -134,6 +134,7 @@ function actionLabel(actionId) {
   if (actionId === "__system_armed__") return "System armed";
   if (actionId === "__system_unarmed__") return "System unarmed";
   if (actionId === "__void_schedule__") return "Void schedule";
+  if (actionId === "__evac_reset__") return "Emergency state reset";
   return hit?.label || actionId;
 }
 
@@ -360,9 +361,9 @@ async function runSpeakerCheck(msgEl) {
 }
 
 function evacPhaseLabel(phase) {
-  if (phase === "red") return "Code Red active";
-  if (phase === "blue") return "Code Blue active";
-  return "Idle";
+  if (phase === "red") return "Code Red — event active";
+  if (phase === "blue") return "Code Blue — event active";
+  return "No active code";
 }
 
 function applyArmedState(armed) {
@@ -1036,9 +1037,26 @@ async function loadFobDevices() {
 
 function sectionSystemHtml() {
   const armed = state.config?.armed !== false;
+  const phase = state.config?.evacPhase || "idle";
   const fobs = state.fobDevices || [];
+  const evacResetPanel =
+    phase === "idle"
+      ? ""
+      : `
+      <div class="panel stack" style="border-color:var(--warn)">
+        <div class="panel-head">
+          <div>
+            <h2>Active emergency code</h2>
+            <p><strong>${escapeHtml(evacPhaseLabel(phase))}</strong> — Red/Blue buttons stay locked until all clear or reset.</p>
+            <p class="muted" style="margin:0.35rem 0 0;font-size:0.85rem">There is no separate <strong>Code Green</strong> button. Staff use <strong>Stop &amp; All clear</strong> on the phone app (plays Code Green on horns). Use reset below only if the campus is safe but the app is stuck.</p>
+          </div>
+        </div>
+        <button type="button" class="btn btn-ghost" id="evac-reset">Reset state only (no horns)</button>
+        <div id="evac-reset-msg"></div>
+      </div>`;
   return `
     <div class="stack">
+      ${evacResetPanel}
       <div class="panel stack">
         <div class="panel-head">
           <div>
@@ -1487,6 +1505,24 @@ function wireSystemSection() {
     } catch (err) {
       if (msg) msg.innerHTML = `<div class="error-banner">${escapeHtml(err.message)}</div>`;
     }
+  });
+  $("#evac-reset")?.addEventListener("click", async () => {
+    const msg = $("#evac-reset-msg");
+    if (
+      !confirm(
+        "Reset emergency state to idle without playing horns?\n\nOnly if campus is safe and the app is stuck on an active code.",
+      )
+    ) {
+      return;
+    }
+    const { res, data } = await api("/api/admin/evac-reset", { method: "POST" });
+    if (!res.ok) {
+      if (msg) msg.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Reset failed.")}</div>`;
+      return;
+    }
+    applyEvacPhase("idle");
+    if (msg) msg.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "Reset.")}</div>`;
+    setTimeout(() => void renderSection("system"), 500);
   });
 }
 

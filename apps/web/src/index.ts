@@ -1791,6 +1791,43 @@ app.get("/api/admin/overview", async (c) => {
   });
 });
 
+/** Admin — clear stuck evac phase without playing horns (e.g. test left phase on red). */
+app.post("/api/admin/evac-reset", async (c) => {
+  const session = c.get("session");
+  if (!session?.scopes.includes("admin")) return c.json({ error: "Forbidden" }, 403);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
+  const phase = await getEvacPhase(c.env);
+  if (phase === "idle") {
+    return c.json({ ok: true, evacPhase: "idle", message: "No active code — already idle." });
+  }
+  await setEvacPhase(c.env, "idle");
+  await publishEvacPhase(c.env, "idle", session.label);
+  const id = crypto.randomUUID();
+  await insertAudit(c.env, {
+    id,
+    actionId: "__evac_reset__",
+    label: session.label,
+    pinId: session.pinId,
+    mode: "admin",
+    status: "done",
+    detail: `reset evac phase from ${phase} (no horns)`,
+  });
+  await publishSystemEvent(c.env, "activity", {
+    id,
+    actionId: "__evac_reset__",
+    status: "done",
+    at: Date.now(),
+  });
+  return c.json({
+    ok: true,
+    evacPhase: "idle",
+    previousPhase: phase,
+    message: `Emergency state reset (${phase} → idle). Campus horns were not played.`,
+  });
+});
+
 app.post("/api/admin/volumes", async (c) => {
   const session = c.get("session");
   if (!session?.scopes.includes("admin")) return c.json({ error: "Forbidden" }, 403);
