@@ -152,15 +152,17 @@ export async function handleFobTrigger(
   const id = crypto.randomUUID();
   const label = (input.label || input.source || `Fob · ${code}`).trim().slice(0, 120);
 
-  try {
-    await playLocalAction(actionId);
-    console.log(`[fob] ${code} → ${actionId} (${label})`);
-    void reportFobToCloud({ id, code, actionId, label, ok: true });
-    return { ok: true, actionId, id };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Fob play failed";
-    console.error(`[fob] ${code} failed`, message);
-    void reportFobToCloud({ id, code, actionId, label, ok: false, error: message });
-    return { ok: false, status: 500, error: message };
-  }
+  void (async () => {
+    try {
+      await playLocalAction(actionId);
+      console.log(`[fob] ${code} → ${actionId} (${label})`);
+      await reportFobToCloud({ id, code, actionId, label, ok: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Fob play failed";
+      console.error(`[fob] ${code} failed`, message);
+      await reportFobToCloud({ id, code, actionId, label, ok: false, error: message });
+    }
+  })();
+
+  return { ok: true, actionId, id };
 }
