@@ -44,6 +44,7 @@ import {
   setFobDeviceActive,
   armFobLease,
   disarmFobLease,
+  unlinkFobForPin,
   getFobStatusForPin,
   authorizeFobTrigger,
   mapFobCodeToAction,
@@ -951,6 +952,24 @@ app.post("/api/fob/disarm", async (c) => {
     at: Date.now(),
   });
   return c.json({ ok: true, message: "Fob disarmed." });
+});
+
+app.post("/api/fob/unlink", async (c) => {
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  if (!canUseFob(session.scopes)) {
+    return c.json({ error: "Evacuation access required." }, 403);
+  }
+  const result = await unlinkFobForPin(c.env, session.pinId);
+  if (!result.ok) return c.json({ error: result.error }, 400);
+  await publishSystemEvent(c.env, "fob", {
+    by: session.label,
+    armed: false,
+    unlinked: true,
+    fobId: result.fobId,
+    at: Date.now(),
+  });
+  return c.json({ ok: true, message: "Fob unlinked from your PIN." });
 });
 
 /** Pi: verify fob lease before playing horns. */

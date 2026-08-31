@@ -425,6 +425,19 @@ export async function disarmFobLease(
   return { ok: true };
 }
 
+/** Remove fob assignment from this PIN and drop any active lease. */
+export async function unlinkFobForPin(
+  env: Env,
+  pinId: string,
+): Promise<{ ok: true; fobId: string | null } | { ok: false; error: string }> {
+  const fobId = await getPinFobId(env, pinId);
+  if (!fobId) return { ok: false, error: "No fob linked to unlink." };
+  await env.DB.prepare(`DELETE FROM fob_leases WHERE fob_id = ?`).bind(fobId).run();
+  await env.DB.prepare(`DELETE FROM fob_pairing WHERE pin_id = ?`).bind(pinId).run();
+  await setPinFobId(env, pinId, null);
+  return { ok: true, fobId };
+}
+
 export async function getFobStatusForPin(env: Env, pinId: string) {
   const assignedId = await getPinFobId(env, pinId);
   if (!assignedId) {

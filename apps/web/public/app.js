@@ -128,6 +128,26 @@ function startFobPairPoll() {
   }, 1500);
 }
 
+async function unlinkFob() {
+  if (
+    !confirm(
+      "Unlink this fob from your PIN? It will stop working until you link again.",
+    )
+  ) {
+    return;
+  }
+  touchActivity();
+  const { res, data } = await api("/api/fob/unlink", { method: "POST", body: "{}" });
+  if (!res.ok) {
+    state.message = { kind: "err", text: data.error || "Could not unlink fob." };
+    renderHome();
+    return;
+  }
+  state.message = { kind: "ok", text: data.message || "Fob unlinked." };
+  await loadFobStatus();
+  renderHome();
+}
+
 function fobStatusHtml() {
   const f = state.fob;
   if (f?.canUseFob === false) {
@@ -178,10 +198,11 @@ function fobStatusHtml() {
         <p class="muted" style="margin:0.35rem 0 0">Arm before carrying the fob. Press works for <strong>3 hours</strong>, then silent until you arm again.</p>
       </div>
       <p style="margin:0">${armed ? `<span class="arm-pill arm-pill--on">Armed until ${escapeHtml(until)} CT</span>` : `<span class="arm-pill arm-pill--off">Not armed — fob presses do nothing</span>`}</p>
-      <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+      <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center">
         ${armed ? `<button type="button" class="btn btn-ghost" id="fob-disarm">Disarm fob</button>` : `<button type="button" class="btn btn-primary" id="fob-arm">Arm fob (3 hours)</button>`}
-        <span class="muted" style="align-self:center;font-size:0.85rem">Or dial 9090 → press 4 → PIN</span>
+        <button type="button" class="btn btn-ghost" id="fob-unlink" style="color:var(--muted)">Unlink fob</button>
       </div>
+      <p class="muted" style="margin:0;font-size:0.85rem">Or dial 9090 → press 4 → PIN to re-arm without unlinking.</p>
     </div>`;
 }
 
@@ -685,6 +706,7 @@ function renderHome() {
   $("#fob-link")?.addEventListener("click", () => void startFobPairing());
   $("#fob-arm")?.addEventListener("click", () => void armFob());
   $("#fob-disarm")?.addEventListener("click", () => void disarmFob());
+  $("#fob-unlink")?.addEventListener("click", () => void unlinkFob());
   void loadAudit();
 }
 
