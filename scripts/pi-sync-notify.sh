@@ -8,10 +8,10 @@ REPO="${APP_HOME}/arnold-alarm"
 ENV_FILE="${APP_HOME}/.config/arnold-alarm/gateway.env"
 AUDIO_DIR="${APP_HOME}/.config/arnold-alarm/audio"
 
-# Physical desk phones later: 0011 Left desk · 0014 Elders office · 0015 Right desk
-# Audition on Adin's phone only for now:
-NOTIFY_EXTS="${NOTIFY_EXTS:-0023}"
-NOTIFY_LABELS="${NOTIFY_LABELS:-0023:Adin's phone}"
+# Prod: Left desk, Right desk, Adin's phone — Elders office (0014) excluded.
+NOTIFY_EXTS="${NOTIFY_EXTS:-0011,0015,0023}"
+NOTIFY_LABELS="${NOTIFY_LABELS:-0011:Left desk,0015:Right desk,0023:Adin's phone}"
+NOTIFY_ONLY="${SPEAKER_CHECK_NOTIFY_ONLY:-0}"
 
 merge_env() {
   local key="$1"
@@ -41,7 +41,7 @@ merge_env "TEST_NOTIFY_EXTS" "$NOTIFY_EXTS"
 merge_env "TEST_NOTIFY_LABELS" "$NOTIFY_LABELS"
 merge_env "TEST_NOTIFY_FROM" "${TEST_NOTIFY_FROM:-9090}"
 merge_env "PA_MAX_CONCURRENT_CALLS" "${PA_MAX_CONCURRENT_CALLS:-8}"
-merge_env "SPEAKER_CHECK_NOTIFY_ONLY" "1"
+merge_env "SPEAKER_CHECK_NOTIFY_ONLY" "$NOTIFY_ONLY"
 merge_env "TEST_NOTIFY_PROMPT" "${AUDIO_DIR}/pa-sip-test-notify.pcm"
 merge_env "TEST_NOTIFY_DELAY_PROMPT" "${AUDIO_DIR}/pa-sip-test-delay.pcm"
 
@@ -71,4 +71,4 @@ echo ""
 echo "==> Health (look for testNotify.configured=true and promptReady=true):"
 curl -s http://127.0.0.1:8787/health | python3 -m json.tool 2>/dev/null | head -40 || curl -s http://127.0.0.1:8787/health | head -c 800
 echo ""
-echo "Done. Run speaker check from desk → Speaker test (Adin's phone 0023 only for now)."
+echo "Done. Speaker check: ${NOTIFY_EXTS} (notify-only=${NOTIFY_ONLY})."

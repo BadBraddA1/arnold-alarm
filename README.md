@@ -148,8 +148,8 @@ Sequence example (second bell):
 - **Stop & All clear** is green (Code Green ×2 only — not a direct Code Green play button).
 - **Admin** panel: arm/disarm, live speaker status (from Protect), volume profiles, speaker check, and staff PIN management.
 - **Volume profiles:** Admin can set **class bell volume per speaker** (plus a default for new horns). Emergency / all clear / speaker check / PA use the emergency level (default **100%**). Speakers restore to emergency level after each bell.
-- **Speaker check desk notify:** before TEST ACOC, the gateway dials `TEST_NOTIFY_EXTS` (currently **0023 Adin's phone only** while auditioning; later `0011` Left desk, `0014` Elders office, `0015` Right desk) via UniFi Talk from **9090 Campus Security**, plays a stand-by prompt, listens for **0** to delay horns, says **goodbye**, and hangs up. The desk **Speaker test** board shows live per-phone status.
-- **Audition desk prompt only:** set `SPEAKER_CHECK_NOTIFY_ONLY=1` on the Pi — speaker check rings `TEST_NOTIFY_EXTS` but skips campus horns. Remove before prod.
+- **Speaker check desk notify:** before TEST ACOC, the gateway dials `TEST_NOTIFY_EXTS` (`0011` Left desk, `0015` Right desk, `0023` Adin's phone — **not** Elders office `0014`) via UniFi Talk from **9090 Campus Security**, plays a stand-by prompt, listens for **0** to delay horns, says **goodbye**, then plays horns unless delayed. The desk **Speaker test** board shows live per-phone status.
+- **Audition desk prompt only:** set `SPEAKER_CHECK_NOTIFY_ONLY=1` on the Pi — speaker check rings desk phones but skips campus horns.
 
 ## Ops / safety notes
 
