@@ -14,6 +14,46 @@ const DEFAULT_MAP: Record<string, string> = {
   all_clear: "__all_clear__",
 };
 
+const PAIR_CODES = new Set(["clear", "green", "all_clear", "wake", "pair"]);
+
+function cloudFobPairUrl(): string {
+  return (
+    process.env.CLOUD_FOB_PAIR_URL ||
+    `${cloudBase()}/api/gateway/fob/pair-check`
+  );
+}
+
+async function tryPairWithCloud(
+  fobId: string,
+  code: string,
+): Promise<{ paired: boolean; fobName?: string; label?: string }> {
+  if (!PAIR_CODES.has(code)) return { paired: false };
+  const secret = process.env.GATEWAY_POLL_SECRET || "";
+  if (!secret) return { paired: false };
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12_000);
+    const res = await fetch(cloudFobPairUrl(), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ fobId, code }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    const data = (await res.json().catch(() => ({}))) as {
+      paired?: boolean;
+      fobName?: string;
+      label?: string;
+    };
+    return { paired: !!data.paired, fobName: data.fobName, label: data.label };
+  } catch {
+    return { paired: false };
+  }
+}
+
 function fobSecret(): string {
   return (process.env.FOB_WEBHOOK_SECRET || process.env.GATEWAY_POLL_SECRET || "").trim();
 }
@@ -178,11 +218,25 @@ export async function handleFobTrigger(
   const code = input.code.trim().toLowerCase().replace(/\s+/g, "_");
   if (!fobId) return { ok: false, status: 400, error: "fob id required" };
   if (!code) return { ok: false, status: 400, error: "code required (red, blue, clear)" };
-  if (!DEFAULT_MAP[code]) {
+  if (!DEFAULT_MAP[code] && !PAIR_CODES.has(code)) {
     return { ok: false, status: 404, error: `Unknown code: ${code}` };
   }
 
   const id = crypto.randomUUID();
+
+  if (PAIR_CODES.has(code)) {
+    const pair = await tryPairWithCloud(fobId, code);
+    if (pair.paired) {
+      console.log(
+        `[fob] paired ${fobId} → ${pair.label || "staff"} (${pair.fobName || fobId}) — no horns`,
+      );
+      return { ok: true, actionId: "fob.pair", id, armed: true };
+    }
+  }
+
+  if (!DEFAULT_MAP[code]) {
+    return { ok: true, id, armed: false, error: "No link session — open Link my fob in the app first." };
+  }
 
   if (requireLease()) {
     const auth = await authorizeWithCloud(fobId, code);

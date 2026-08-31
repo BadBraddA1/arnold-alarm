@@ -14,6 +14,7 @@ let state = {
   idleSec: 3 * 60 * 60,
   expiresAt: null,
   fob: null,
+  fobPairPoll: null,
   _speakersTimer: null,
 };
 
@@ -83,9 +84,85 @@ async function disarmFob() {
   renderHome();
 }
 
+async function startFobPairing() {
+  touchActivity();
+  const { res, data } = await api("/api/fob/pair/start", { method: "POST", body: "{}" });
+  if (!res.ok) {
+    state.message = { kind: "err", text: data.error || "Could not start fob link." };
+    renderHome();
+    return;
+  }
+  state.message = {
+    kind: "ok",
+    text: data.message || "Hold button 4 (green) on your fob now.",
+  };
+  await loadFobStatus();
+  renderHome();
+  startFobPairPoll();
+}
+
+function startFobPairPoll() {
+  if (state.fobPairPoll) clearInterval(state.fobPairPoll);
+  state.fobPairPoll = setInterval(async () => {
+    if (!state.session || state.route !== "home") {
+      clearInterval(state.fobPairPoll);
+      state.fobPairPoll = null;
+      return;
+    }
+    const prevAssigned = state.fob?.assigned;
+    await loadFobStatus();
+    if (state.fob?.assigned && state.fob?.armed && !prevAssigned) {
+      clearInterval(state.fobPairPoll);
+      state.fobPairPoll = null;
+      state.message = {
+        kind: "ok",
+        text: `Linked ${state.fob.fobName || state.fob.assigned} — armed for 3 hours.`,
+      };
+      renderHome();
+      return;
+    }
+    if (!state.fob?.pairing?.active) {
+      clearInterval(state.fobPairPoll);
+      state.fobPairPoll = null;
+    }
+  }, 1500);
+}
+
 function fobStatusHtml() {
   const f = state.fob;
-  if (!f?.assigned) return "";
+  if (f?.canUseFob === false) {
+    return `<div class="panel stack" style="margin:0;padding:1rem;border:1px solid var(--border);border-radius:12px">
+      <p class="muted" style="margin:0">Fobs need <strong>Evacuation</strong> on your PIN — ask an admin to add it in Staff PINs.</p>
+    </div>`;
+  }
+  if (f?.pairing?.active) {
+    const until = f.pairing.expiresAt
+      ? new Date(f.pairing.expiresAt).toLocaleTimeString("en-US", {
+          timeZone: TZ,
+          hour: "numeric",
+          minute: "2-digit",
+        })
+      : "";
+    return `
+    <div class="panel stack" style="margin:0;padding:1rem;border:2px solid var(--accent);border-radius:12px">
+      <div>
+        <h2 style="margin:0;font-size:1.05rem">Link your fob</h2>
+        <p class="muted" style="margin:0.35rem 0 0"><strong>Hold button 4 (green)</strong> on the fob in your hand until this screen updates. No horns — just links it to you.</p>
+      </div>
+      <p style="margin:0"><span class="arm-pill arm-pill--on">Waiting until ${escapeHtml(until)} CT</span></p>
+    </div>`;
+  }
+  if (!f?.assigned) {
+    return `
+    <div class="panel stack" style="margin:0;padding:1rem;border:1px solid var(--border);border-radius:12px">
+      <div>
+        <h2 style="margin:0;font-size:1.05rem">Campus fob</h2>
+        <p class="muted" style="margin:0.35rem 0 0">Link the physical fob in your hand, then carry it for 3 hours per shift.</p>
+      </div>
+      <button type="button" class="btn btn-primary" id="fob-link">Link my fob</button>
+      <p class="muted" style="margin:0;font-size:0.85rem">Then hold <strong>button 4 (green)</strong> to confirm it&apos;s the right one.</p>
+    </div>`;
+  }
   const armed = f.armed;
   const until = f.expiresAt
     ? new Date(f.expiresAt).toLocaleTimeString("en-US", {
@@ -386,6 +463,22 @@ async function ensureLiveSync() {
     channel.subscribe("activity", () => {
       if (state.route === "home") void loadAudit();
     });
+    channel.subscribe("fob-pair", async (msg) => {
+      const payload = msg.data || {};
+      if (payload.pinId && payload.pinId !== state.session?.pinId) return;
+      if (payload.state === "linked") {
+        if (state.fobPairPoll) {
+          clearInterval(state.fobPairPoll);
+          state.fobPairPoll = null;
+        }
+        state.message = {
+          kind: "ok",
+          text: `Linked ${payload.fobName || payload.fobId} — armed for 3 hours.`,
+        };
+        await loadFobStatus();
+        if (state.route === "home") renderHome();
+      }
+    });
   } catch (err) {
     console.warn("[live] Ably unavailable — using poll fallback", err);
   }
@@ -589,6 +682,7 @@ function renderHome() {
         ${banner()}
       </div>
     </main>`;
+  $("#fob-link")?.addEventListener("click", () => void startFobPairing());
   $("#fob-arm")?.addEventListener("click", () => void armFob());
   $("#fob-disarm")?.addEventListener("click", () => void disarmFob());
   void loadAudit();

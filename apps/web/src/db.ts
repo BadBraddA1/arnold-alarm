@@ -303,6 +303,13 @@ const FOB_CODE_MAP: Record<string, string> = {
   all_clear: "__all_clear__",
 };
 
+/** Hold button 4 / green — link fob from app (no horns). */
+const FOB_PAIR_CODES = new Set(["clear", "green", "all_clear", "wake", "pair"]);
+
+export function isFobPairCode(code: string): boolean {
+  return FOB_PAIR_CODES.has(normalizeFobCode(code));
+}
+
 function normalizeFobCode(raw: string): string {
   return raw.trim().toLowerCase().replace(/\s+/g, "_");
 }
@@ -382,7 +389,7 @@ export async function armFobLease(
   await purgeExpiredFobLeases(env);
   const fobId = input.fobId?.trim() || (await getPinFobId(env, input.pinId));
   if (!fobId) {
-    return { ok: false, error: "No fob assigned — ask an admin to link a fob to your PIN." };
+    return { ok: false, error: "No fob linked yet — use Link my fob in the app and hold button 4." };
   }
   const device = await getFobDevice(env, fobId);
   if (!device || !device.active) {
@@ -433,6 +440,81 @@ export async function getFobStatusForPin(env: Env, pinId: string) {
     fobName: device?.name ?? assignedId,
     armed,
     expiresAt: armed ? lease!.expires_at : null,
+  };
+}
+
+const FOB_PAIR_MS = 3 * 60 * 1000;
+
+async function purgeExpiredFobPairing(env: Env) {
+  await env.DB.prepare(`DELETE FROM fob_pairing WHERE expires_at <= ?`)
+    .bind(Date.now())
+    .run();
+}
+
+export async function startFobPairing(
+  env: Env,
+  pinId: string,
+  label: string,
+): Promise<{ expiresAt: number }> {
+  await purgeExpiredFobPairing(env);
+  const now = Date.now();
+  const expiresAt = now + FOB_PAIR_MS;
+  await env.DB.prepare(`DELETE FROM fob_pairing`).run();
+  await env.DB.prepare(
+    `INSERT INTO fob_pairing (pin_id, label, expires_at, started_at) VALUES (?, ?, ?, ?)`,
+  )
+    .bind(pinId, label, expiresAt, now)
+    .run();
+  return { expiresAt };
+}
+
+export async function getFobPairingForPin(env: Env, pinId: string) {
+  await purgeExpiredFobPairing(env);
+  const row = await env.DB.prepare(
+    `SELECT pin_id, label, expires_at, started_at FROM fob_pairing WHERE pin_id = ?`,
+  )
+    .bind(pinId)
+    .first<{ pin_id: string; label: string; expires_at: number; started_at: number }>();
+  if (!row || row.expires_at <= Date.now()) return null;
+  return row;
+}
+
+export async function tryCompleteFobPairing(
+  env: Env,
+  fobIdRaw: string,
+  codeRaw: string,
+): Promise<
+  | { paired: true; pinId: string; label: string; fobId: string; fobName: string; expiresAt: number }
+  | { paired: false }
+> {
+  if (!isFobPairCode(codeRaw)) return { paired: false };
+  const fobId = normalizeFobId(fobIdRaw);
+  if (!fobId) return { paired: false };
+  const device = await getFobDevice(env, fobId);
+  if (!device || !device.active) return { paired: false };
+
+  await purgeExpiredFobPairing(env);
+  const session = await env.DB.prepare(
+    `SELECT pin_id, label, expires_at FROM fob_pairing ORDER BY started_at DESC LIMIT 1`,
+  ).first<{ pin_id: string; label: string; expires_at: number }>();
+  if (!session || session.expires_at <= Date.now()) return { paired: false };
+
+  await setPinFobId(env, session.pin_id, fobId);
+  const armed = await armFobLease(env, {
+    pinId: session.pin_id,
+    label: session.label,
+    fobId,
+  });
+  await env.DB.prepare(`DELETE FROM fob_pairing`).run();
+  if (!armed.ok) return { paired: false };
+
+  return {
+    paired: true,
+    pinId: session.pin_id,
+    label: session.label,
+    fobId,
+    fobName: armed.fobName,
+    expiresAt: armed.expiresAt,
   };
 }
 

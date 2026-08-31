@@ -48,6 +48,10 @@ import {
   authorizeFobTrigger,
   mapFobCodeToAction,
   getFobDevice,
+  startFobPairing,
+  getFobPairingForPin,
+  tryCompleteFobPairing,
+  isFobPairCode,
 } from "./db";
 import {
   actionAllowed,
@@ -850,13 +854,52 @@ app.post("/api/gateway/ivr-alarm", async (c) => {
   });
 });
 
+function canUseFob(scopes: Scope[]): boolean {
+  return hasScope(scopes, "evacuate") || hasScope(scopes, "admin");
+}
+
 app.get("/api/fob/status", async (c) => {
   const session = c.get("session");
   if (!session) return c.json({ error: "Unauthorized" }, 401);
   const status = await getFobStatusForPin(c.env, session.pinId);
+  const pairing = await getFobPairingForPin(c.env, session.pinId);
   return c.json({
     ...status,
     leaseHours: FOB_LEASE_SEC / 3600,
+    pairing: pairing
+      ? { active: true, expiresAt: pairing.expires_at }
+      : { active: false, expiresAt: null },
+    canUseFob: canUseFob(session.scopes),
+  });
+});
+
+app.post("/api/fob/pair/start", async (c) => {
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before linking a fob." }, 403);
+  }
+  if (!canUseFob(session.scopes)) {
+    return c.json(
+      {
+        error:
+          "Your PIN needs Evacuation access to carry a fob — ask an admin to add it under Staff PINs.",
+      },
+      403,
+    );
+  }
+  const { expiresAt } = await startFobPairing(c.env, session.pinId, session.label);
+  await publishSystemEvent(c.env, "fob-pair", {
+    pinId: session.pinId,
+    by: session.label,
+    state: "waiting",
+    expiresAt,
+    at: Date.now(),
+  });
+  return c.json({
+    ok: true,
+    expiresAt,
+    message: "Hold button 4 (green) on your fob until this screen updates.",
   });
 });
 
@@ -866,8 +909,14 @@ app.post("/api/fob/arm", async (c) => {
   if (session.mustChangePin) {
     return c.json({ error: "Set your permanent PIN before arming a fob." }, 403);
   }
-  if (!hasScope(session.scopes, "evacuate")) {
-    return c.json({ error: "Evacuation scope required to arm a fob." }, 403);
+  if (!canUseFob(session.scopes)) {
+    return c.json(
+      {
+        error:
+          "Your PIN needs Evacuation access for fobs — ask an admin to add it under Staff PINs.",
+      },
+      403,
+    );
   }
   const result = await armFobLease(c.env, {
     pinId: session.pinId,
@@ -922,6 +971,40 @@ app.post("/api/gateway/fob/authorize", async (c) => {
   return c.json({ allowed: true, ...auth });
 });
 
+/** Pi: hold button 4 / green while someone is linking in the app — no horns. */
+app.post("/api/gateway/fob/pair-check", async (c) => {
+  if (!gatewayAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
+  await touchGatewayHeartbeat(c.env, "fob-pair");
+  const body = (await c.req.json().catch(() => ({}))) as {
+    fobId?: string;
+    code?: string;
+  };
+  const fobId = body.fobId?.trim();
+  const code = body.code?.trim();
+  if (!fobId || !code) return c.json({ error: "fobId and code required" }, 400);
+  if (!isFobPairCode(code)) return c.json({ paired: false });
+  const result = await tryCompleteFobPairing(c.env, fobId, code);
+  if (!result.paired) return c.json({ paired: false });
+  await publishSystemEvent(c.env, "fob-pair", {
+    pinId: result.pinId,
+    by: result.label,
+    state: "linked",
+    fobId: result.fobId,
+    fobName: result.fobName,
+    expiresAt: result.expiresAt,
+    at: Date.now(),
+  });
+  await publishSystemEvent(c.env, "fob", {
+    fobId: result.fobId,
+    fobName: result.fobName,
+    by: result.label,
+    armed: true,
+    expiresAt: result.expiresAt,
+    at: Date.now(),
+  });
+  return c.json({ paired: true, ...result });
+});
+
 /** Phone IVR option 4 — arm assigned fob for 3 hours. */
 app.post("/api/gateway/fob/arm", async (c) => {
   if (!gatewayAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
@@ -949,8 +1032,11 @@ app.post("/api/gateway/fob/arm", async (c) => {
     return c.json({ error: "must_change_pin", message: "Change your temp PIN in the app first." }, 403);
   }
   const scopes = parseScopesField(matched.scopes);
-  if (!hasScope(scopes, "evacuate")) {
-    return c.json({ error: "not_allowed", message: "Evacuation scope required." }, 403);
+  if (!hasScope(scopes, "evacuate") && !hasScope(scopes, "admin")) {
+    return c.json(
+      { error: "not_allowed", message: "Evacuation access required for fob arm." },
+      403,
+    );
   }
   await clearRateLimit(c.env, `ivr-fob:${clientIp(c)}`);
   const result = await armFobLease(c.env, {
