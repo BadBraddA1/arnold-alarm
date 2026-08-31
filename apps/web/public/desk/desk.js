@@ -126,7 +126,7 @@ function actionLabel(actionId) {
   if (actionId === "__stop__") return "Stop speakers";
   if (actionId === "test.speakers") return "Speaker check";
   if (actionId.startsWith("test.phone:")) return "Desk phone test call";
-  if (actionId.startsWith("test.speaker:")) return "Speaker tone test";
+  if (actionId.startsWith("test.speaker:")) return "Speaker bell test";
   if (actionId === "bells.first") return "First bell";
   if (actionId === "bells.second") return "Second bell";
   if (actionId === "__system_armed__") return "System armed";
@@ -520,7 +520,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0) {
             : actionId === "test.speakers"
               ? "Speaker check running on campus."
               : actionId.startsWith("test.speaker:")
-                ? "Tone test playing on that speaker."
+                ? "Bell sound playing on that speaker at its bell volume."
                 : "Playing now on campus speakers.";
           if (msgEl) msgEl.innerHTML = `<div class="success-banner">${escapeHtml(text)}</div>`;
           return data;
@@ -716,7 +716,7 @@ function speakerFullList(data) {
         <div class="speaker-main">
           <div class="speaker-head">
             <span class="speaker-name">${escapeHtml(s.name)}</span>
-            <button type="button" class="btn btn-ghost btn-sm" data-test-speaker="${escapeHtml(s.id)}" ${ok ? "" : "disabled"}>Test tone</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-test-speaker="${escapeHtml(s.id)}" ${ok ? "" : "disabled"}>Test bell</button>
           </div>
           <span class="speaker-meta">${escapeHtml(String(s.state || "UNKNOWN"))} · now ${Number(s.volume) || 0}% · ${escapeHtml(String(s.speakerStatus || "—"))}</span>
           <label class="speaker-bell-vol">

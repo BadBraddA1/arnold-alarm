@@ -686,7 +686,7 @@ function actionLabel(actionId) {
   if (actionId === "__all_clear__") return "Stop & All clear (Code Green ×2)";
   if (actionId === "__stop__") return "Stop speakers";
   if (actionId === "test.speakers") return "TEST ACOC — speaker check";
-  if (actionId.startsWith("test.speaker:")) return "Speaker tone test";
+  if (actionId.startsWith("test.speaker:")) return "Speaker bell test";
   if (actionId === "bells.first") return "First bell";
   if (actionId === "bells.second") return "Second bell";
   if (actionId === "bells.test") return "TEST ACOC";
@@ -829,7 +829,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
       actionId === "test.speakers" || actionId === "bells.test"
         ? "Notifying desk phones, then start tone + TEST ACOC on all speakers."
         : actionId.startsWith("test.speaker:")
-          ? "Playing start tone on that speaker at its bell volume."
+          ? "Playing Start_Bell_Tone on that speaker at its bell volume."
         : actionId === "bells.second"
           ? "Playing now — start bell tone twice (all speakers)."
           : actionId === "bells.first"
@@ -1612,7 +1612,7 @@ function speakerStatusHtml(data) {
         <div class="speaker-main">
           <div class="speaker-head">
             <span class="speaker-name">${escapeHtml(s.name)}</span>
-            <button type="button" class="btn btn-ghost speaker-test-btn" data-test-speaker="${escapeHtml(s.id)}" data-test-name="${escapeHtml(s.name)}" ${ok ? "" : "disabled"}>Test tone</button>
+            <button type="button" class="btn btn-ghost speaker-test-btn" data-test-speaker="${escapeHtml(s.id)}" data-test-name="${escapeHtml(s.name)}" ${ok ? "" : "disabled"}>Test bell</button>
           </div>
           <span class="muted speaker-meta">${escapeHtml(String(s.state || "UNKNOWN"))} · now ${Number(s.volume) || 0}% · ${escapeHtml(activity)}</span>
           <label class="speaker-bell-vol">

@@ -130,8 +130,8 @@ async function runAction(
       throw Object.assign(new Error("Invalid speaker id"), { status: 400 });
     }
     const file =
-      (process.env.TEST_ONE_FILE || "Test_Start_Tone.mp3").trim() ||
-      "Test_Start_Tone.mp3";
+      (process.env.TEST_ONE_FILE || "Start_Bell_Tone.mp3").trim() ||
+      "Start_Bell_Tone.mp3";
     const { startTalkback } = await import("./talkback.js");
     await withActionVolume(actionId, () =>
       startTalkback({

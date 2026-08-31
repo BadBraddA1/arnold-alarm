@@ -163,7 +163,7 @@ Sequence example (second bell):
 
 No need to re-test speakers for UI work. When the building is empty, re-verify once:
 
-1. Test tone — walk each horn.
+1. Test bell — walk each horn (uses `Start_Bell_Tone.mp3` at that speaker’s bell volume slider).
 2. Code Blue once (short), then All clear.
 3. Remote queue from cell (remote PIN) — confirm status says queued, then audio within a few seconds (Ably push; slow poll if push missed).
 

@@ -36,8 +36,8 @@ export async function playLocalAction(
       throw new Error("Invalid speaker id");
     }
     const file =
-      (process.env.TEST_ONE_FILE || "Test_Start_Tone.mp3").trim() ||
-      "Test_Start_Tone.mp3";
+      (process.env.TEST_ONE_FILE || "Start_Bell_Tone.mp3").trim() ||
+      "Start_Bell_Tone.mp3";
     const { startTalkback } = await import("./talkback.js");
     await withActionVolume(actionId, () =>
       startTalkback({
