@@ -1,97 +1,53 @@
 /**
- * Physical fob / Alarm Manager webhook → local talkback play.
- * Bypasses arm hold (emergency backup when staff cannot reach a phone).
+ * Physical fob / Alarm Manager webhook → lease check → local talkback play.
+ * Staff must arm their assigned fob (app or phone IVR 4) — 3-hour window.
  */
 import { playLocalAction } from "./play-local.js";
 
 const DEFAULT_MAP: Record<string, string> = {
   red: "evacuate.code_red",
   code_red: "evacuate.code_red",
-  "code-red": "evacuate.code_red",
   blue: "evacuate.code_blue",
   code_blue: "evacuate.code_blue",
-  "code-blue": "evacuate.code_blue",
   clear: "__all_clear__",
   green: "__all_clear__",
   all_clear: "__all_clear__",
-  "all-clear": "__all_clear__",
 };
 
 function fobSecret(): string {
   return (process.env.FOB_WEBHOOK_SECRET || process.env.GATEWAY_POLL_SECRET || "").trim();
 }
 
-function loadMap(): Record<string, string> {
-  const base = { ...DEFAULT_MAP };
-  try {
-    const extra = JSON.parse(process.env.FOB_MAP || "{}") as Record<string, string>;
-    for (const [k, v] of Object.entries(extra)) {
-      if (k && v) base[k.toLowerCase()] = v;
-    }
-  } catch {
-    console.warn("[fob] invalid FOB_MAP JSON — using defaults");
-  }
-  return base;
+function requireLease(): boolean {
+  return process.env.FOB_REQUIRE_LEASE !== "0";
+}
+
+function cloudBase(): string {
+  return (
+    process.env.CLOUD_POLL_URL || "https://alarm.arnoldcoc.org/api/gateway/poll"
+  ).replace(/\/api\/gateway\/poll\/?$/, "");
+}
+
+function cloudFobReportUrl(): string {
+  return process.env.CLOUD_FOB_URL || `${cloudBase()}/api/gateway/fob`;
+}
+
+function cloudFobAuthorizeUrl(): string {
+  return (
+    process.env.CLOUD_FOB_AUTH_URL || `${cloudBase()}/api/gateway/fob/authorize`
+  );
 }
 
 export function getFobStatus(): {
   enabled: boolean;
+  requireLease: boolean;
   codes: string[];
-  bypassArm: boolean;
 } {
-  const enabled = Boolean(fobSecret());
-  const map = loadMap();
-  const codes = [...new Set(Object.keys(map))].sort();
   return {
-    enabled,
-    codes,
-    bypassArm: process.env.FOB_BYPASS_ARM !== "0",
+    enabled: Boolean(fobSecret()),
+    requireLease: requireLease(),
+    codes: Object.keys(DEFAULT_MAP).sort(),
   };
-}
-
-function cloudFobUrl(): string {
-  return (
-    process.env.CLOUD_FOB_URL ||
-    (process.env.CLOUD_POLL_URL || "https://alarm.arnoldcoc.org/api/gateway/poll").replace(
-      /\/api\/gateway\/poll\/?$/,
-      "/api/gateway/fob",
-    )
-  );
-}
-
-async function reportFobToCloud(input: {
-  id: string;
-  code: string;
-  actionId: string;
-  label: string;
-  ok: boolean;
-  error?: string;
-}): Promise<void> {
-  const secret = process.env.GATEWAY_POLL_SECRET || "";
-  if (!secret) return;
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 12_000);
-    await fetch(cloudFobUrl(), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${secret}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(input),
-      signal: ctrl.signal,
-    });
-    clearTimeout(timer);
-  } catch (err) {
-    console.warn(
-      "[fob] cloud audit failed (local play still ran)",
-      err instanceof Error ? err.message : err,
-    );
-  }
-}
-
-function normalizeCode(raw: string): string {
-  return raw.trim().toLowerCase().replace(/\s+/g, "_");
 }
 
 function extractAuth(reqUrl: URL, headers: IncomingMessageHeaders): string | null {
@@ -110,17 +66,101 @@ type IncomingMessageHeaders = {
 };
 
 export type FobTriggerInput = {
+  fobId: string;
   code: string;
   label?: string;
   secret?: string;
-  source?: string;
 };
+
+type AuthorizeResult =
+  | {
+      allowed: true;
+      actionId: string;
+      label: string;
+      pinId: string;
+      fobName: string;
+    }
+  | { allowed: false; error: string };
+
+async function authorizeWithCloud(
+  fobId: string,
+  code: string,
+): Promise<AuthorizeResult> {
+  const secret = process.env.GATEWAY_POLL_SECRET || "";
+  if (!secret) {
+    return { allowed: false, error: "Gateway cloud secret not configured" };
+  }
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12_000);
+    const res = await fetch(cloudFobAuthorizeUrl(), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ fobId, code }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    const data = (await res.json().catch(() => ({}))) as AuthorizeResult & {
+      error?: string;
+    };
+    if (!res.ok || !data.allowed) {
+      return { allowed: false, error: data.error || `authorize failed (${res.status})` };
+    }
+    return data;
+  } catch (err) {
+    return {
+      allowed: false,
+      error: err instanceof Error ? err.message : "authorize network error",
+    };
+  }
+}
+
+async function reportFobToCloud(input: {
+  id: string;
+  fobId: string;
+  code: string;
+  actionId: string;
+  label: string;
+  pinId?: string;
+  ok?: boolean;
+  rejected?: boolean;
+  error?: string;
+}): Promise<void> {
+  const secret = process.env.GATEWAY_POLL_SECRET || "";
+  if (!secret) return;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12_000);
+    await fetch(cloudFobReportUrl(), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(input),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+  } catch (err) {
+    console.warn(
+      "[fob] cloud audit failed",
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
 
 export async function handleFobTrigger(
   input: FobTriggerInput,
   headers: IncomingMessageHeaders = {},
   reqUrl?: URL,
-): Promise<{ ok: true; actionId: string; id: string } | { ok: false; status: number; error: string }> {
+): Promise<
+  | { ok: true; actionId: string; id: string; armed: true }
+  | { ok: true; id: string; armed: false; error: string }
+  | { ok: false; status: number; error: string }
+> {
   const expected = fobSecret();
   if (!expected) {
     return { ok: false, status: 503, error: "FOB_WEBHOOK_SECRET not configured" };
@@ -134,35 +174,106 @@ export async function handleFobTrigger(
     return { ok: false, status: 401, error: "Unauthorized" };
   }
 
-  const code = normalizeCode(input.code);
-  if (!code) {
-    return { ok: false, status: 400, error: "code required (red, blue, clear)" };
-  }
-
-  const map = loadMap();
-  const actionId = map[code];
-  if (!actionId) {
-    return {
-      ok: false,
-      status: 404,
-      error: `Unknown fob code: ${code}. Known: ${Object.keys(map).sort().join(", ")}`,
-    };
+  const fobId = input.fobId.trim().toLowerCase();
+  const code = input.code.trim().toLowerCase().replace(/\s+/g, "_");
+  if (!fobId) return { ok: false, status: 400, error: "fob id required" };
+  if (!code) return { ok: false, status: 400, error: "code required (red, blue, clear)" };
+  if (!DEFAULT_MAP[code]) {
+    return { ok: false, status: 404, error: `Unknown code: ${code}` };
   }
 
   const id = crypto.randomUUID();
-  const label = (input.label || input.source || `Fob · ${code}`).trim().slice(0, 120);
 
+  if (requireLease()) {
+    const auth = await authorizeWithCloud(fobId, code);
+    if (!auth.allowed) {
+      console.warn(`[fob] rejected ${fobId}/${code}: ${auth.error}`);
+      void reportFobToCloud({
+        id,
+        fobId,
+        code,
+        actionId: DEFAULT_MAP[code],
+        label: input.label || fobId,
+        rejected: true,
+        error: auth.error,
+      });
+      return { ok: true, id, armed: false, error: auth.error };
+    }
+
+    void (async () => {
+      try {
+        await playLocalAction(auth.actionId);
+        console.log(`[fob] ${fobId}/${code} → ${auth.actionId} (${auth.label})`);
+        await reportFobToCloud({
+          id,
+          fobId,
+          code,
+          actionId: auth.actionId,
+          label: auth.label,
+          pinId: auth.pinId,
+          ok: true,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Fob play failed";
+        console.error(`[fob] play failed`, message);
+        await reportFobToCloud({
+          id,
+          fobId,
+          code,
+          actionId: auth.actionId,
+          label: auth.label,
+          pinId: auth.pinId,
+          ok: false,
+          error: message,
+        });
+      }
+    })();
+
+    return { ok: true, actionId: auth.actionId, id, armed: true };
+  }
+
+  const actionId = DEFAULT_MAP[code];
+  const label = input.label || `Fob · ${fobId}`;
   void (async () => {
     try {
       await playLocalAction(actionId);
-      console.log(`[fob] ${code} → ${actionId} (${label})`);
-      await reportFobToCloud({ id, code, actionId, label, ok: true });
+      await reportFobToCloud({
+        id,
+        fobId,
+        code,
+        actionId,
+        label,
+        ok: true,
+      });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Fob play failed";
-      console.error(`[fob] ${code} failed`, message);
-      await reportFobToCloud({ id, code, actionId, label, ok: false, error: message });
+      await reportFobToCloud({
+        id,
+        fobId,
+        code,
+        actionId,
+        label,
+        ok: false,
+        error: err instanceof Error ? err.message : "play failed",
+      });
     }
   })();
+  return { ok: true, actionId, id, armed: true };
+}
 
-  return { ok: true, actionId, id };
+/** Parse /fob/{fobId}/{code} or legacy /fob/{code} with ?fob= */
+export function parseFobPath(pathname: string, searchParams: URLSearchParams): {
+  fobId: string;
+  code: string;
+} | null {
+  if (!pathname.startsWith("/fob/")) return null;
+  const rest = decodeURIComponent(pathname.slice("/fob/".length));
+  const parts = rest.split("/").filter(Boolean);
+  if (parts.length >= 2) {
+    return { fobId: parts[0], code: parts[1] };
+  }
+  if (parts.length === 1) {
+    const fobId = searchParams.get("fob")?.trim();
+    if (fobId) return { fobId, code: parts[0] };
+  }
+  return null;
 }

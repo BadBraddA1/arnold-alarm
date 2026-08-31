@@ -1,4 +1,5 @@
 import type { Env } from "./types";
+import { FOB_LEASE_SEC } from "./types";
 
 export type PinRow = {
   id: string;
@@ -20,7 +21,7 @@ export async function listActivePins(env: Env): Promise<PinRow[]> {
 
 export async function listAllPins(env: Env) {
   const { results } = await env.DB.prepare(
-    `SELECT id, label, scopes, active, created_at, must_change_pin
+    `SELECT id, label, scopes, active, created_at, must_change_pin, fob_id
      FROM alarm_pins ORDER BY created_at ASC`,
   ).all<{
     id: string;
@@ -29,6 +30,7 @@ export async function listAllPins(env: Env) {
     active: number;
     created_at: string;
     must_change_pin: number;
+    fob_id: string | null;
   }>();
   return results ?? [];
 }
@@ -268,6 +270,221 @@ export async function setPinMustChange(env: Env, id: string, mustChangePin: bool
   await env.DB.prepare(`UPDATE alarm_pins SET must_change_pin = ? WHERE id = ?`)
     .bind(mustChangePin ? 1 : 0, id)
     .run();
+}
+
+export async function setPinFobId(env: Env, id: string, fobId: string | null) {
+  await env.DB.prepare(`UPDATE alarm_pins SET fob_id = ? WHERE id = ?`)
+    .bind(fobId, id)
+    .run();
+}
+
+export type FobDeviceRow = {
+  id: string;
+  name: string;
+  active: number;
+  created_at: string;
+};
+
+export type FobLeaseRow = {
+  fob_id: string;
+  pin_id: string;
+  label: string;
+  expires_at: number;
+  armed_at: number;
+};
+
+const FOB_CODE_MAP: Record<string, string> = {
+  red: "evacuate.code_red",
+  code_red: "evacuate.code_red",
+  blue: "evacuate.code_blue",
+  code_blue: "evacuate.code_blue",
+  clear: "__all_clear__",
+  green: "__all_clear__",
+  all_clear: "__all_clear__",
+};
+
+function normalizeFobCode(raw: string): string {
+  return raw.trim().toLowerCase().replace(/\s+/g, "_");
+}
+
+function normalizeFobId(raw: string): string | null {
+  const id = raw.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return id.length >= 2 && id.length <= 40 ? id : null;
+}
+
+export function mapFobCodeToAction(code: string): string | null {
+  return FOB_CODE_MAP[normalizeFobCode(code)] ?? null;
+}
+
+async function purgeExpiredFobLeases(env: Env) {
+  await env.DB.prepare(`DELETE FROM fob_leases WHERE expires_at <= ?`)
+    .bind(Date.now())
+    .run();
+}
+
+export async function listFobDevices(env: Env): Promise<FobDeviceRow[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT id, name, active, created_at FROM fob_devices ORDER BY name ASC`,
+  ).all<FobDeviceRow>();
+  return results ?? [];
+}
+
+export async function getFobDevice(env: Env, id: string): Promise<FobDeviceRow | null> {
+  return env.DB.prepare(
+    `SELECT id, name, active, created_at FROM fob_devices WHERE id = ?`,
+  )
+    .bind(id)
+    .first<FobDeviceRow>();
+}
+
+export async function upsertFobDevice(env: Env, id: string, name: string) {
+  const slug = normalizeFobId(id);
+  if (!slug) throw new Error("Invalid fob id — use letters, numbers, dash (2–40 chars).");
+  const label = name.trim().slice(0, 80) || slug;
+  await env.DB.prepare(
+    `INSERT INTO fob_devices (id, name, active) VALUES (?, ?, 1)
+     ON CONFLICT(id) DO UPDATE SET name = excluded.name`,
+  )
+    .bind(slug, label)
+    .run();
+  return slug;
+}
+
+export async function setFobDeviceActive(env: Env, id: string, active: boolean) {
+  await env.DB.prepare(`UPDATE fob_devices SET active = ? WHERE id = ?`)
+    .bind(active ? 1 : 0, id)
+    .run();
+}
+
+export async function getPinFobId(env: Env, pinId: string): Promise<string | null> {
+  const row = await env.DB.prepare(`SELECT fob_id FROM alarm_pins WHERE id = ?`)
+    .bind(pinId)
+    .first<{ fob_id: string | null }>();
+  return row?.fob_id ?? null;
+}
+
+export async function getFobLease(env: Env, fobId: string): Promise<FobLeaseRow | null> {
+  await purgeExpiredFobLeases(env);
+  return env.DB.prepare(
+    `SELECT fob_id, pin_id, label, expires_at, armed_at FROM fob_leases WHERE fob_id = ?`,
+  )
+    .bind(fobId)
+    .first<FobLeaseRow>();
+}
+
+export async function armFobLease(
+  env: Env,
+  input: { pinId: string; label: string; fobId?: string | null },
+): Promise<
+  | { ok: true; fobId: string; fobName: string; expiresAt: number }
+  | { ok: false; error: string }
+> {
+  await purgeExpiredFobLeases(env);
+  const fobId = input.fobId?.trim() || (await getPinFobId(env, input.pinId));
+  if (!fobId) {
+    return { ok: false, error: "No fob assigned — ask an admin to link a fob to your PIN." };
+  }
+  const device = await getFobDevice(env, fobId);
+  if (!device || !device.active) {
+    return { ok: false, error: "That fob is not registered or is inactive." };
+  }
+  const now = Date.now();
+  const expiresAt = now + FOB_LEASE_SEC * 1000;
+  await env.DB.prepare(
+    `INSERT INTO fob_leases (fob_id, pin_id, label, expires_at, armed_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(fob_id) DO UPDATE SET
+       pin_id = excluded.pin_id,
+       label = excluded.label,
+       expires_at = excluded.expires_at,
+       armed_at = excluded.armed_at`,
+  )
+    .bind(fobId, input.pinId, input.label, expiresAt, now)
+    .run();
+  return { ok: true, fobId, fobName: device.name, expiresAt };
+}
+
+export async function disarmFobLease(
+  env: Env,
+  input: { pinId: string; fobId?: string | null },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const fobId = input.fobId?.trim() || (await getPinFobId(env, input.pinId));
+  if (!fobId) return { ok: false, error: "No fob assigned." };
+  const lease = await getFobLease(env, fobId);
+  if (!lease || lease.pin_id !== input.pinId) {
+    return { ok: false, error: "You do not have this fob armed." };
+  }
+  await env.DB.prepare(`DELETE FROM fob_leases WHERE fob_id = ?`).bind(fobId).run();
+  return { ok: true };
+}
+
+export async function getFobStatusForPin(env: Env, pinId: string) {
+  const assignedId = await getPinFobId(env, pinId);
+  if (!assignedId) {
+    return { assigned: null as null, armed: false, expiresAt: null as number | null, fobName: null as string | null };
+  }
+  const device = await getFobDevice(env, assignedId);
+  const lease = await getFobLease(env, assignedId);
+  const armed = Boolean(
+    lease && lease.pin_id === pinId && lease.expires_at > Date.now(),
+  );
+  return {
+    assigned: assignedId,
+    fobName: device?.name ?? assignedId,
+    armed,
+    expiresAt: armed ? lease!.expires_at : null,
+  };
+}
+
+export async function authorizeFobTrigger(
+  env: Env,
+  fobIdRaw: string,
+  codeRaw: string,
+): Promise<
+  | {
+      allowed: true;
+      actionId: string;
+      label: string;
+      pinId: string;
+      fobName: string;
+    }
+  | { allowed: false; error: string }
+> {
+  const fobId = normalizeFobId(fobIdRaw);
+  if (!fobId) return { allowed: false, error: "Invalid fob id" };
+  const actionId = mapFobCodeToAction(codeRaw);
+  if (!actionId) return { allowed: false, error: "Unknown fob action code" };
+
+  const device = await getFobDevice(env, fobId);
+  if (!device || !device.active) {
+    return { allowed: false, error: "Unknown or inactive fob" };
+  }
+
+  const lease = await getFobLease(env, fobId);
+  if (!lease || lease.expires_at <= Date.now()) {
+    return {
+      allowed: false,
+      error: "Fob not armed — press 4 on campus phone or arm in the app (3-hour window).",
+    };
+  }
+
+  if (actionId === "__all_clear__") {
+    const phase = await getEvacPhase(env);
+    const gate = evacActionAllowedForPhase(actionId, phase);
+    if (!gate.ok) return { allowed: false, error: gate.error };
+  } else if (evacPhaseForAction(actionId)) {
+    const phase = await getEvacPhase(env);
+    const gate = evacActionAllowedForPhase(actionId, phase);
+    if (!gate.ok) return { allowed: false, error: gate.error };
+  }
+
+  return {
+    allowed: true,
+    actionId,
+    label: `${lease.label} · ${device.name}`,
+    pinId: lease.pin_id,
+    fobName: device.name,
+  };
 }
 
 export async function insertAudit(

@@ -22,8 +22,9 @@ let state = {
   events: [],
   message: null,
   expiresAt: null,
-  idleSec: 30 * 60,
+  idleSec: 3 * 60 * 60,
   lastActivityAt: Date.now(),
+  fobDevices: [],
   _speakersTimer: null,
   _pollTimer: null,
   _testNotifyPoll: null,
@@ -936,7 +937,7 @@ function sectionStaffHtml(pins) {
               <div class="pin-card-head">
                 <div>
                   <strong>${escapeHtml(p.label)}</strong>${self ? ' <span class="scope-pill scope-pill--admin">You</span>' : ""}
-                  <div class="pin-card-scopes">${scopePills(p.scopes)}</div>
+                  <div class="pin-card-scopes">${scopePills(p.scopes)}${p.fobId ? ` <span class="scope-pill">Fob: ${escapeHtml(p.fobId)}</span>` : ""}</div>
                 </div>
                 <div class="pin-card-meta muted">${pinStatusLabel(p, self)}${p.created_at ? ` · ${escapeHtml(formatCentral(p.created_at))}` : ""}</div>
               </div>
@@ -951,6 +952,8 @@ function sectionStaffHtml(pins) {
               ${
                 open
                   ? `<form class="stack pin-edit-form" data-pin-form="${escapeHtml(p.id)}" style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid var(--line)">
+                <div class="field"><label>Assigned fob <span class="muted">(slug — webhook /fob/SLUG/red)</span></label>
+                  <input name="fobId" value="${escapeHtml(p.fobId || "")}" placeholder="lobby" autocomplete="off" /></div>
                 <div class="field"><label>Display name</label><input name="label" value="${escapeHtml(p.label)}" required /></div>
                 <div class="field"><label>Permissions</label><div class="checks pin-scope-checks">${scopeChecks("edit", p.scopes, p.id)}</div></div>
                 <div class="field">
@@ -1025,10 +1028,35 @@ function sectionBellsHtml() {
     </div>`;
 }
 
+async function loadFobDevices() {
+  const { res, data } = await api("/api/admin/fobs");
+  if (!res.ok) return [];
+  return data.devices || [];
+}
+
 function sectionSystemHtml() {
   const armed = state.config?.armed !== false;
+  const fobs = state.fobDevices || [];
   return `
     <div class="stack">
+      <div class="panel stack">
+        <div class="panel-head">
+          <div>
+            <h2>Fobs</h2>
+            <p>Register once — assign slug to staff, use in Alarm Manager webhooks. Staff arm for 3 hours before presses work.</p>
+          </div>
+        </div>
+        <form class="row" id="fob-add-form" style="flex-wrap:wrap;gap:0.5rem">
+          <input name="id" placeholder="slug (lobby)" required style="min-width:7rem" />
+          <input name="name" placeholder="Display name" required style="flex:1;min-width:10rem" />
+          <button type="submit" class="btn btn-primary btn-sm">Add fob</button>
+        </form>
+        <div id="fob-msg"></div>
+        <div class="stack" style="margin-top:0.75rem">${fobs.length ? fobs.map((f) => `<div class="row" style="justify-content:space-between;border-top:1px solid var(--line);padding-top:0.5rem">
+          <div><strong>${escapeHtml(f.name)}</strong> <span class="muted">(${escapeHtml(f.id)})</span></div>
+          <code style="font-size:0.75rem">/fob/${escapeHtml(f.id)}/red?secret=…</code>
+        </div>`).join("") : `<p class="muted" style="margin:0">No fobs registered yet.</p>`}</div>
+      </div>
       <div class="panel stack">
         <div class="panel-head">
           <div>
@@ -1090,7 +1118,7 @@ function topbarHtml() {
         <p class="meta">${escapeHtml(subtitles[state.section] || "")}</p>
       </div>
       <div class="row">
-        <span class="muted" style="font-size:0.82rem">Sessions end after 45 min · 30 min idle</span>
+        <span class="muted" style="font-size:0.82rem">Sessions & fob leases — 3 hours</span>
       </div>
     </header>`;
 }
@@ -1340,6 +1368,7 @@ function wireStaffSection() {
         label: String(fd.get("label") || "").trim(),
         scopes,
         mustChangePin: !!fd.get("mustChange"),
+        fobId: String(fd.get("fobId") || "").trim() || null,
       };
       const resetPin = String(fd.get("resetPin") || "").replace(/\D/g, "");
       if (resetPin) body.resetPin = resetPin;
@@ -1431,6 +1460,24 @@ function wireTestSection() {
 }
 
 function wireSystemSection() {
+  $("#fob-add-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const msg = $("#fob-msg");
+    const { res, data } = await api("/api/admin/fobs", {
+      method: "POST",
+      body: JSON.stringify({
+        id: String(fd.get("id") || "").trim(),
+        name: String(fd.get("name") || "").trim(),
+      }),
+    });
+    if (!res.ok) {
+      if (msg) msg.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not add fob.")}</div>`;
+      return;
+    }
+    if (msg) msg.innerHTML = `<div class="success-banner">Added ${escapeHtml(data.name)} (${escapeHtml(data.id)}).</div>`;
+    await renderSection("system");
+  });
   $("#toggle-armed")?.addEventListener("click", async () => {
     const msg = $("#arm-msg");
     try {
@@ -1481,6 +1528,7 @@ async function renderSection(section) {
     } else if (section === "bells") {
       html = sectionBellsHtml();
     } else if (section === "system") {
+      state.fobDevices = await loadFobDevices();
       html = sectionSystemHtml();
     }
     content.innerHTML = html;

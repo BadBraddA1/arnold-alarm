@@ -11,8 +11,9 @@ let state = {
   remoteGateway: null, // { online, message, ageSec }
   message: null,
   lastActivityAt: Date.now(),
-  idleSec: 30 * 60,
+  idleSec: 3 * 60 * 60,
   expiresAt: null,
+  fob: null,
   _speakersTimer: null,
 };
 
@@ -43,10 +44,68 @@ function setSessionFromAuth(data) {
     mustChangePin: !!data.mustChangePin,
   };
   state.expiresAt = data.expiresAt || Date.now() + (data.maxAgeSec || 2700) * 1000;
-  state.idleSec = data.idleSec || 30 * 60;
+  state.idleSec = data.idleSec || 3 * 60 * 60;
   touchActivity();
   armIdleWatch();
   void ensureLiveSync();
+  void loadFobStatus();
+}
+
+async function loadFobStatus() {
+  if (!state.session) return;
+  const { res, data } = await api("/api/fob/status");
+  if (res.ok) state.fob = data;
+}
+
+async function armFob() {
+  touchActivity();
+  const { res, data } = await api("/api/fob/arm", { method: "POST", body: "{}" });
+  if (!res.ok) {
+    state.message = { kind: "err", text: data.error || "Could not arm fob." };
+    renderHome();
+    return;
+  }
+  state.message = { kind: "ok", text: data.message || "Fob armed for 3 hours." };
+  await loadFobStatus();
+  renderHome();
+}
+
+async function disarmFob() {
+  touchActivity();
+  const { res, data } = await api("/api/fob/disarm", { method: "POST", body: "{}" });
+  if (!res.ok) {
+    state.message = { kind: "err", text: data.error || "Could not disarm fob." };
+    renderHome();
+    return;
+  }
+  state.message = { kind: "ok", text: data.message || "Fob disarmed." };
+  await loadFobStatus();
+  renderHome();
+}
+
+function fobStatusHtml() {
+  const f = state.fob;
+  if (!f?.assigned) return "";
+  const armed = f.armed;
+  const until = f.expiresAt
+    ? new Date(f.expiresAt).toLocaleTimeString("en-US", {
+        timeZone: TZ,
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : "";
+  return `
+    <div class="panel stack" style="margin:0;padding:1rem;border:1px solid var(--border);border-radius:12px">
+      <div>
+        <h2 style="margin:0;font-size:1.05rem">Your fob — ${escapeHtml(f.fobName || f.assigned)}</h2>
+        <p class="muted" style="margin:0.35rem 0 0">Arm before carrying the fob. Press works for <strong>3 hours</strong>, then silent until you arm again.</p>
+      </div>
+      <p style="margin:0">${armed ? `<span class="arm-pill arm-pill--on">Armed until ${escapeHtml(until)} CT</span>` : `<span class="arm-pill arm-pill--off">Not armed — fob presses do nothing</span>`}</p>
+      <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+        ${armed ? `<button type="button" class="btn btn-ghost" id="fob-disarm">Disarm fob</button>` : `<button type="button" class="btn btn-primary" id="fob-arm">Arm fob (3 hours)</button>`}
+        <span class="muted" style="align-self:center;font-size:0.85rem">Or dial 9090 → press 4 → PIN</span>
+      </div>
+    </div>`;
 }
 
 async function forceLogout(reason) {
@@ -515,6 +574,7 @@ function renderHome() {
             ? `<div class="error-banner" style="margin:0">System is <strong>unarmed</strong> — you can still send commands; speakers will not play until an admin arms the system.</div>`
             : ""
         }
+        ${canEvac ? fobStatusHtml() : ""}
         <div id="last-play" class="last-play muted">Loading last play…</div>
         <div class="tile-grid">
           ${canEvac ? `<button type="button" class="tile" data-go="evacuate"><h2>Emergency codes</h2><p>Code Red, Blue, and All clear — panic buttons for your phone.</p></button>` : ""}
@@ -529,6 +589,8 @@ function renderHome() {
         ${banner()}
       </div>
     </main>`;
+  $("#fob-arm")?.addEventListener("click", () => void armFob());
+  $("#fob-disarm")?.addEventListener("click", () => void disarmFob());
   void loadAudit();
 }
 

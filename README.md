@@ -20,7 +20,7 @@ Pi    → UniFi Protect NVR → AI speakers
 ```
 
 - Site works on cellular. **Play** needs either church Wi‑Fi (direct to Pi) or a PIN with **remote** scope (Worker queue → **Ably push** to Pi; slow D1 poll as fallback).
-- PINs live in **Cloudflare D1** (hashed). Sessions expire after **45 minutes** (or **30 minutes idle**) so a left-unlocked phone does not stay armed.
+- PINs live in **Cloudflare D1** (hashed). Sessions and fob leases last **3 hours** (idle sign-out at the same window).
 - **Arm / disarm:** Admins arm/disarm and run speaker check from the <strong>Admin</strong> panel. Staff can still send bells/codes while unarmed — commands are **held** (audit log) and speakers stay silent until an admin arms again. Default is armed. **Arm state + Home activity sync live across phones** via Ably (12s poll fallback if Ably is down).
 - Status distinguishes **queued on campus** vs **playing now**, and **Pi offline** vs **Protect unreachable**.
 - Home shows **last play** plus recent activity (Central time). PINs with only **bells** or only **evacuate** skip Home and open that panel directly (no activity log).
@@ -233,24 +233,22 @@ Remote play also needs Worker secret `GATEWAY_POLL_SECRET` matching the Pi, and 
 
 ## Physical fobs (Alarm Manager → Pi)
 
-Move fob alarms off direct Protect ringtones (old path) onto the Pi so horns use **talkback** — same clips as the phone app. Fobs stay usable when staff cannot reach a phone in time; no PIN or unlock required.
+Fobs use **fixed webhook URLs** per device (register once in desk **System → Fobs**). Staff must **arm** their assigned fob before it works — **3 hours**, same window as the app login.
 
-1. On the Pi, set a webhook secret in `~/.config/arnold-alarm/gateway.env`:
-   ```bash
-   FOB_WEBHOOK_SECRET="$(openssl rand -hex 24)"
-   ```
-   Restart: `sudo systemctl restart arnold-alarm-gateway`
+**Arm a fob:** Arnold app → **Arm fob (3 hours)**, or dial **9090** → press **4** → enter PIN.
 
-2. In **Protect → Alarm Manager**, edit each fob rule. **Remove** the old “Play audio on speaker” action. **Add** a **Webhook** action with URL (Pi LAN IP `192.168.1.204`):
+After 3 hours the fob still clicks but **does nothing** (logged as held) until armed again.
 
-   | Fob | Webhook URL |
+1. **Desk → System → Fobs** — add each device (slug + name, e.g. `lobby` / Lobby fob).
+2. **Desk → Staff PINs** — assign each person their fob slug.
+3. **Alarm Manager** — webhook per fob rule (POST; query string is fine):
+
+   | Action | URL pattern |
    |---|---|
-   | Code Red | `http://192.168.1.204:8787/fob/red?secret=YOUR_SECRET&label=Lobby%20fob` |
-   | Code Blue | `http://192.168.1.204:8787/fob/blue?secret=YOUR_SECRET&label=…` |
-   | All clear | `http://192.168.1.204:8787/fob/clear?secret=YOUR_SECRET&label=…` |
+   | Code Red | `http://192.168.1.204:8787/fob/SLUG/red?secret=FOB_SECRET` |
+   | Code Blue | `http://192.168.1.204:8787/fob/SLUG/blue?secret=FOB_SECRET` |
+   | All clear | `http://192.168.1.204:8787/fob/SLUG/clear?secret=FOB_SECRET` |
 
-   Change `label=` to identify which fob fired (shows in desk Activity). Use a unique secret per site — never commit it.
+   Replace `SLUG` with the fob id from step 1. Same secret on every URL (`FOB_WEBHOOK_SECRET` on the Pi).
 
-3. **Test empty building:** press each fob once; desk Activity should show `Fob · red` (or your label) with status **played**. Code Red/Blue loop until All clear.
-
-Fobs **bypass unarmed** by default (`FOB_BYPASS_ARM=1`) — emergency hardware always reaches speakers. Phone/app remains primary when you have time (countdown, audit by PIN, etc.).
+4. Staff arms before carrying the fob. Activity shows who had it armed when a press fires.

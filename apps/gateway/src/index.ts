@@ -21,7 +21,7 @@ import { handleCloudJob } from "./cloud-jobs.js";
 import { startAblyPush } from "./ably-push.js";
 import { getLatestTestNotifyReport } from "./test-notify.js";
 import { agentAuthorized, runAgentAction } from "./agent-remote.js";
-import { getFobStatus, handleFobTrigger } from "./fob.js";
+import { getFobStatus, handleFobTrigger, parseFobPath } from "./fob.js";
 
 const PORT = Number(process.env.PORT || 8787);
 const PLAY_JWT_SECRET = process.env.PLAY_JWT_SECRET || "";
@@ -559,26 +559,15 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
     (url.pathname === "/fob" || url.pathname.startsWith("/fob/"))
   ) {
     try {
-      let code = "";
-      let label: string | undefined;
-      if (url.pathname.startsWith("/fob/")) {
-        code = decodeURIComponent(url.pathname.slice("/fob/".length)).split("/")[0] || "";
+      const parsed = parseFobPath(url.pathname, url.searchParams);
+      if (!parsed) {
+        sendJson(res, 400, {
+          error: "Use /fob/{fobId}/{code}?secret=… — e.g. /fob/lobby/red",
+        });
+        return;
       }
-      if (req.method === "POST") {
-        const raw = await readBody(req);
-        if (raw.trim()) {
-          try {
-            const body = JSON.parse(raw) as { code?: string; label?: string; source?: string };
-            code = body.code?.trim() || code;
-            label = body.label?.trim() || body.source?.trim();
-          } catch {
-            /* query/path only */
-          }
-        }
-      }
-      label = label || url.searchParams.get("label")?.trim() || undefined;
       const result = await handleFobTrigger(
-        { code, label },
+        { fobId: parsed.fobId, code: parsed.code },
         {
           authorization: req.headers.authorization,
           "x-fob-secret": req.headers["x-fob-secret"] as string | undefined,
@@ -589,10 +578,14 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
         sendJson(res, result.status, { error: result.error });
         return;
       }
+      if ("armed" in result && result.armed === false) {
+        sendJson(res, 403, { ok: false, id: result.id, error: result.error });
+        return;
+      }
       sendJson(res, 200, {
         ok: true,
         id: result.id,
-        actionId: result.actionId,
+        actionId: "actionId" in result ? result.actionId : undefined,
         playback: getPlaybackState(),
       });
     } catch (err) {

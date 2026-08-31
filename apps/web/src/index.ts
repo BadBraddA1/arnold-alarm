@@ -38,11 +38,22 @@ import {
   updatePinScopes,
   updatePinLabel,
   setPinMustChange,
+  setPinFobId,
+  listFobDevices,
+  upsertFobDevice,
+  setFobDeviceActive,
+  armFobLease,
+  disarmFobLease,
+  getFobStatusForPin,
+  authorizeFobTrigger,
+  mapFobCodeToAction,
+  getFobDevice,
 } from "./db";
 import {
   actionAllowed,
   hasScope,
   normalizeScopes,
+  FOB_LEASE_SEC,
   parseActionList,
   resolvePlayLoop,
   SESSION_COOKIE,
@@ -839,6 +850,183 @@ app.post("/api/gateway/ivr-alarm", async (c) => {
   });
 });
 
+app.get("/api/fob/status", async (c) => {
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  const status = await getFobStatusForPin(c.env, session.pinId);
+  return c.json({
+    ...status,
+    leaseHours: FOB_LEASE_SEC / 3600,
+  });
+});
+
+app.post("/api/fob/arm", async (c) => {
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before arming a fob." }, 403);
+  }
+  if (!hasScope(session.scopes, "evacuate")) {
+    return c.json({ error: "Evacuation scope required to arm a fob." }, 403);
+  }
+  const result = await armFobLease(c.env, {
+    pinId: session.pinId,
+    label: session.label,
+  });
+  if (!result.ok) return c.json({ error: result.error }, 400);
+  await publishSystemEvent(c.env, "fob", {
+    fobId: result.fobId,
+    fobName: result.fobName,
+    by: session.label,
+    armed: true,
+    expiresAt: result.expiresAt,
+    at: Date.now(),
+  });
+  return c.json({
+    ok: true,
+    fobId: result.fobId,
+    fobName: result.fobName,
+    expiresAt: result.expiresAt,
+    message: `${result.fobName} armed for ${FOB_LEASE_SEC / 3600} hours.`,
+  });
+});
+
+app.post("/api/fob/disarm", async (c) => {
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  const result = await disarmFobLease(c.env, { pinId: session.pinId });
+  if (!result.ok) return c.json({ error: result.error }, 400);
+  await publishSystemEvent(c.env, "fob", {
+    by: session.label,
+    armed: false,
+    at: Date.now(),
+  });
+  return c.json({ ok: true, message: "Fob disarmed." });
+});
+
+/** Pi: verify fob lease before playing horns. */
+app.post("/api/gateway/fob/authorize", async (c) => {
+  if (!gatewayAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
+  await touchGatewayHeartbeat(c.env, "fob-auth");
+  const body = (await c.req.json().catch(() => ({}))) as {
+    fobId?: string;
+    code?: string;
+  };
+  const fobId = body.fobId?.trim();
+  const code = body.code?.trim();
+  if (!fobId || !code) return c.json({ error: "fobId and code required" }, 400);
+  const auth = await authorizeFobTrigger(c.env, fobId, code);
+  if (!auth.allowed) {
+    return c.json({ allowed: false, error: auth.error }, 403);
+  }
+  return c.json({ allowed: true, ...auth });
+});
+
+/** Phone IVR option 4 — arm assigned fob for 3 hours. */
+app.post("/api/gateway/fob/arm", async (c) => {
+  if (!gatewayAuthorized(c)) return c.json({ error: "Unauthorized" }, 401);
+  const body = (await c.req.json().catch(() => ({}))) as { pin?: string };
+  const pin = (body.pin ?? "").replace(/\D/g, "");
+  if (!/^\d{6}$/.test(pin)) {
+    return c.json({ error: "invalid_pin", message: "Enter a 6-digit PIN." }, 400);
+  }
+  const limit = await checkRateLimit(c.env, `ivr-fob:${clientIp(c)}`);
+  if (!limit.allowed) {
+    return c.json({ error: "rate_limited", message: "Too many attempts." }, 429);
+  }
+  const pins = await listActivePins(c.env);
+  let matched: (typeof pins)[0] | null = null;
+  for (const row of pins) {
+    if (await bcrypt.compare(pin, row.pin_hash)) {
+      matched = row;
+      break;
+    }
+  }
+  if (!matched) {
+    return c.json({ error: "incorrect_pin", message: "Incorrect PIN." }, 401);
+  }
+  if (matched.must_change_pin) {
+    return c.json({ error: "must_change_pin", message: "Change your temp PIN in the app first." }, 403);
+  }
+  const scopes = parseScopesField(matched.scopes);
+  if (!hasScope(scopes, "evacuate")) {
+    return c.json({ error: "not_allowed", message: "Evacuation scope required." }, 403);
+  }
+  await clearRateLimit(c.env, `ivr-fob:${clientIp(c)}`);
+  const result = await armFobLease(c.env, {
+    pinId: matched.id,
+    label: matched.label,
+  });
+  if (!result.ok) {
+    return c.json({ error: "arm_failed", message: result.error }, 400);
+  }
+  await publishSystemEvent(c.env, "fob", {
+    fobId: result.fobId,
+    fobName: result.fobName,
+    by: matched.label,
+    armed: true,
+    expiresAt: result.expiresAt,
+    at: Date.now(),
+  });
+  return c.json({
+    ok: true,
+    fobId: result.fobId,
+    fobName: result.fobName,
+    expiresAt: result.expiresAt,
+    label: matched.label,
+  });
+});
+
+app.get("/api/admin/fobs", async (c) => {
+  const session = c.get("session");
+  if (!session?.scopes.includes("admin")) return c.json({ error: "Forbidden" }, 403);
+  const devices = await listFobDevices(c.env);
+  return c.json({
+    devices: devices.map((d) => ({
+      id: d.id,
+      name: d.name,
+      active: d.active !== 0,
+      webhookRed: `${c.env.GATEWAY_URL.replace(/\/$/, "")}/fob/${d.id}/red?secret=…`,
+    })),
+    leaseHours: FOB_LEASE_SEC / 3600,
+  });
+});
+
+app.post("/api/admin/fobs", async (c) => {
+  const session = c.get("session");
+  if (!session?.scopes.includes("admin")) return c.json({ error: "Forbidden" }, 403);
+  const body = (await c.req.json().catch(() => ({}))) as { id?: string; name?: string };
+  const name = body.name?.trim();
+  if (!name) return c.json({ error: "name required" }, 400);
+  try {
+    const id = await upsertFobDevice(c.env, body.id?.trim() || name, name);
+    return c.json({ ok: true, id, name });
+  } catch (err) {
+    return c.json(
+      { error: err instanceof Error ? err.message : "Could not save fob" },
+      400,
+    );
+  }
+});
+
+app.patch("/api/admin/fobs", async (c) => {
+  const session = c.get("session");
+  if (!session?.scopes.includes("admin")) return c.json({ error: "Forbidden" }, 403);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    id?: string;
+    active?: boolean;
+    name?: string;
+  };
+  if (!body.id) return c.json({ error: "id required" }, 400);
+  if (typeof body.name === "string" && body.name.trim()) {
+    await upsertFobDevice(c.env, body.id, body.name.trim());
+  }
+  if (typeof body.active === "boolean") {
+    await setFobDeviceActive(c.env, body.id, body.active);
+  }
+  return c.json({ ok: true });
+});
+
 app.get("/api/gateway/status", async (c) => {
   const session = c.get("session");
   if (!session) return c.json({ error: "Unauthorized" }, 401);
@@ -949,30 +1137,35 @@ app.post("/api/gateway/fob", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {
     id?: string;
     code?: string;
+    fobId?: string;
     actionId?: string;
     label?: string;
+    pinId?: string;
     ok?: boolean;
+    rejected?: boolean;
     error?: string;
   };
   const id = body.id?.trim() || crypto.randomUUID();
-  const actionId = body.actionId?.trim();
+  const actionId =
+    body.actionId?.trim() || mapFobCodeToAction(body.code || "") || "";
   if (!actionId) return c.json({ error: "actionId required" }, 400);
   const label = (body.label || "Physical fob").trim().slice(0, 120);
+  const pinId = body.pinId?.trim() || "__fob__";
 
-  if (body.ok === false) {
+  if (body.rejected || body.ok === false) {
     await insertAudit(c.env, {
       id,
-      actionId,
+      actionId: actionId || `fob.${body.code || "unknown"}`,
       label,
-      pinId: "__fob__",
+      pinId,
       mode: "fob",
-      status: "error",
-      detail: body.error || body.code || "fob play failed",
+      status: body.rejected ? "held" : "error",
+      detail: body.error || body.code || "fob not armed",
     });
     await publishSystemEvent(c.env, "activity", {
       id,
       actionId,
-      status: "error",
+      status: body.rejected ? "held" : "error",
       at: Date.now(),
     });
     return c.json({ ok: true, recorded: true });
@@ -985,7 +1178,7 @@ app.post("/api/gateway/fob", async (c) => {
         id,
         actionId: "__all_clear__",
         label,
-        pinId: "__fob__",
+        pinId,
         mode: "fob",
         status: "error",
         detail: cleared.error,
@@ -999,7 +1192,7 @@ app.post("/api/gateway/fob", async (c) => {
         id,
         actionId,
         label,
-        pinId: "__fob__",
+        pinId,
         mode: "fob",
         status: "error",
         detail: started.error,
@@ -1018,10 +1211,14 @@ app.post("/api/gateway/fob", async (c) => {
     id,
     actionId,
     label,
-    pinId: "__fob__",
+    pinId,
     mode: "fob",
     status: "done",
-    detail: body.code ? `fob:${body.code}` : "physical fob",
+    detail: body.fobId
+      ? `fob:${body.fobId}${body.code ? `/${body.code}` : ""}`
+      : body.code
+        ? `fob:${body.code}`
+        : "physical fob",
   });
   await publishSystemEvent(c.env, "activity", {
     id,
@@ -1144,6 +1341,7 @@ app.get("/api/admin/pins", async (c) => {
       scopes: parseScopesField(p.scopes),
       active: !!p.active,
       mustChangePin: !!p.must_change_pin,
+      fobId: p.fob_id ?? null,
       created_at: p.created_at,
     })),
   });
@@ -1207,6 +1405,7 @@ app.patch("/api/admin/pins", async (c) => {
     resetPin?: string;
     temp?: boolean;
     mustChangePin?: boolean;
+    fobId?: string | null;
   };
   if (!body.id) return c.json({ error: "id required" }, 400);
 
@@ -1232,6 +1431,18 @@ app.patch("/api/admin/pins", async (c) => {
       return c.json({ error: "You cannot remove admin from your own PIN while signed in." }, 400);
     }
     await updatePinScopes(c.env, body.id, scopes);
+  }
+
+  if (body.fobId !== undefined) {
+    const next =
+      body.fobId === null || body.fobId === ""
+        ? null
+        : String(body.fobId).trim().toLowerCase();
+    if (next) {
+      const device = await getFobDevice(c.env, next);
+      if (!device) return c.json({ error: "Unknown fob id" }, 400);
+    }
+    await setPinFobId(c.env, body.id, next);
   }
 
   if (typeof body.resetPin === "string" || body.temp === true) {
