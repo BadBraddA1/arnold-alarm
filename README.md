@@ -4,7 +4,7 @@ PIN-gated class bells + evacuation for **Arnold Church of Christ**. Audio goes t
 
 | | |
 |---|---|
-| **Web** | https://alarm.arnoldcoc.org (Cloudflare Worker + D1) |
+| **Web** | https://alarm.arnoldcoc.org (Cloudflare Worker + D1) — **noindex** / `robots.txt` Disallow |
 | **Desktop console** | https://alarm.arnoldcoc.org/desk/ (admin PIN — full management) |
 | **Mobile / panic** | https://alarm.arnoldcoc.org — big emergency codes + quick bells |
 | **Local** | `~/Code/arnold-alarm` |
