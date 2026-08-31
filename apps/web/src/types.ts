@@ -66,6 +66,9 @@ export function parseActionList(raw: string | undefined): ActionDef[] {
 export function actionAllowed(actionId: string, scopes: Scope[]): boolean {
   // All clear only via Stop & All Clear — not a standalone play button.
   if (actionId === "evacuate.code_green") return false;
+  if (actionId === "__stop__") {
+    return hasScope(scopes, "evacuate") || hasScope(scopes, "admin");
+  }
   if (actionId === "__all_clear__") return hasScope(scopes, "evacuate");
   if (actionId === "test.speakers") {
     return hasScope(scopes, "bells") || hasScope(scopes, "evacuate") || hasScope(scopes, "admin");
@@ -99,4 +102,30 @@ export function resolvePlayLoop(
 ): boolean {
   if (typeof loop === "boolean") return loop;
   return loopsUntilAllClear(actionId);
+}
+
+export type EvacAudioMode = "loop" | "once" | "repeat";
+
+/** How campus horns behave after Code Red / Blue is declared. */
+export function resolveEvacAudio(
+  actionId: string,
+  input: {
+    evacAudio?: EvacAudioMode;
+    loop?: boolean;
+    repeatMinutes?: number;
+  },
+): { loop: boolean; repeatMinutes: number | null } {
+  if (!loopsUntilAllClear(actionId)) {
+    return { loop: resolvePlayLoop(actionId, input.loop), repeatMinutes: null };
+  }
+  let mode: EvacAudioMode = "loop";
+  if (input.evacAudio === "once" || input.evacAudio === "repeat" || input.evacAudio === "loop") {
+    mode = input.evacAudio;
+  } else if (input.loop === false) {
+    mode = "once";
+  }
+  if (mode === "loop") return { loop: true, repeatMinutes: null };
+  if (mode === "once") return { loop: false, repeatMinutes: null };
+  const mins = Math.max(1, Math.min(60, Math.round(Number(input.repeatMinutes) || 2)));
+  return { loop: false, repeatMinutes: mins };
 }

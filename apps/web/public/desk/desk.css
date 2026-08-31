@@ -141,6 +141,17 @@ button, input, select { font: inherit; }
 }
 .desk-topbar .meta { margin: 0.2rem 0 0; font-size: 0.85rem; color: var(--muted); }
 
+.desk-playbook-link {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.desk-playbook-link:hover {
+  text-decoration: underline;
+}
+
 .desk-scroll {
   flex: 1;
   overflow-y: auto;

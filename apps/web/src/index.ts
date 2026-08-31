@@ -52,6 +52,14 @@ import {
   startFobPairing,
   getFobPairingForPin,
   tryCompleteFobPairing,
+  cancelEvacRepeatQueue,
+  clearEvacAudioSchedule,
+  evacActionIdForPhase,
+  getEvacRepeatMinutes,
+  getEvacAudioMode,
+  getQueueJob,
+  setEvacRepeatMinutes,
+  setEvacAudioMode,
   isFobPairCode,
 } from "./db";
 import {
@@ -61,6 +69,8 @@ import {
   FOB_LEASE_SEC,
   parseActionList,
   resolvePlayLoop,
+  resolveEvacAudio,
+  type EvacAudioMode,
   SESSION_COOKIE,
   SESSION_IDLE_SEC,
   SESSION_MAX_AGE_SEC,
@@ -131,9 +141,35 @@ async function clearEvacCode(
   const phase = await getEvacPhase(env);
   const gate = evacActionAllowedForPhase("__all_clear__", phase);
   if (!gate.ok) return gate;
+  await clearEvacAudioSchedule(env);
   await setEvacPhase(env, "idle");
   await publishEvacPhase(env, "idle", by);
   return { ok: true, phase: "idle" };
+}
+
+function evacAudioAuditDetail(audio: {
+  loop: boolean;
+  repeatMinutes: number | null;
+}): string | undefined {
+  if (audio.repeatMinutes) return `repeat ${audio.repeatMinutes}m`;
+  if (audio.loop) return "loop";
+  return "once";
+}
+
+async function applyEvacAudioSettings(
+  env: Env,
+  actionId: string,
+  audio: { loop: boolean; repeatMinutes: number | null },
+  mode: EvacAudioMode,
+) {
+  if (!evacPhaseForAction(actionId)) return;
+  await setEvacAudioMode(env, mode);
+  if (audio.repeatMinutes) {
+    await setEvacRepeatMinutes(env, audio.repeatMinutes);
+  } else {
+    await setEvacRepeatMinutes(env, null);
+    await cancelEvacRepeatQueue(env);
+  }
 }
 
 async function holdUnarmedPlay(
@@ -191,10 +227,14 @@ app.get("/api/config", async (c) => {
   const evacuateActions = parseActionList(c.env.EVACUATE_ACTIONS);
   const armed = await getSystemArmed(c.env);
   const evacPhase = await getEvacPhase(c.env);
+  const evacRepeatMinutes = await getEvacRepeatMinutes(c.env);
+  const evacAudioMode = await getEvacAudioMode(c.env);
   return c.json({
     gatewayUrl: c.env.GATEWAY_URL,
     armed,
     evacPhase,
+    evacRepeatMinutes,
+    evacAudioMode,
     bellActions: parseActionList(c.env.BELL_ACTIONS),
     evacuateActions:
       evacuateActions.length > 0
@@ -365,7 +405,13 @@ app.post("/api/play-token", async (c) => {
   if (session.mustChangePin) {
     return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
   }
-  const body = (await c.req.json().catch(() => ({}))) as { actionId?: string };
+  const body = (await c.req.json().catch(() => ({}))) as {
+    actionId?: string;
+    evacAudio?: EvacAudioMode;
+    loop?: boolean;
+    repeatMinutes?: number;
+    replayActive?: boolean;
+  };
   const actionId = body.actionId?.trim();
   if (!actionId) return c.json({ error: "actionId required" }, 400);
   if (!actionAllowed(actionId, session.scopes)) {
@@ -376,7 +422,17 @@ app.post("/api/play-token", async (c) => {
     return c.json(await holdUnarmedPlay(c.env, session, actionId, "lan"));
   }
 
-  if (
+  const audio = resolveEvacAudio(actionId, body);
+  const replayActive = body.replayActive === true;
+  const evacMode: EvacAudioMode = audio.repeatMinutes
+    ? "repeat"
+    : audio.loop
+      ? "loop"
+      : "once";
+
+  if (actionId === "__stop__") {
+    // Token only — horns stop, evac phase unchanged.
+  } else if (
     actionId === "__all_clear__" ||
     evacPhaseForAction(actionId) ||
     actionId === "evacuate.code_green"
@@ -384,9 +440,15 @@ app.post("/api/play-token", async (c) => {
     if (actionId === "__all_clear__" || actionId === "evacuate.code_green") {
       const cleared = await clearEvacCode(c.env, session.label);
       if (!cleared.ok) return c.json({ error: cleared.error }, 409);
+    } else if (replayActive) {
+      const phase = await getEvacPhase(c.env);
+      if (evacActionIdForPhase(phase) !== actionId) {
+        return c.json({ error: "No matching active code to replay." }, 409);
+      }
     } else {
       const started = await beginEvacCode(c.env, actionId, session.label);
       if (!started.ok) return c.json({ error: started.error }, 409);
+      await applyEvacAudioSettings(c.env, actionId, audio, evacMode);
     }
   }
 
@@ -403,6 +465,9 @@ app.post("/api/play-token", async (c) => {
     canRemote: hasScope(session.scopes, "remote"),
     armed: true,
     evacPhase,
+    loop: audio.loop,
+    evacRepeatMinutes: await getEvacRepeatMinutes(c.env),
+    evacAudioMode: await getEvacAudioMode(c.env),
   });
 });
 
@@ -426,6 +491,9 @@ app.post("/api/play-remote", async (c) => {
     actionId?: string;
     delayMinutes?: number;
     loop?: boolean;
+    evacAudio?: EvacAudioMode;
+    repeatMinutes?: number;
+    replayActive?: boolean;
   };
   const actionId = body.actionId?.trim();
   if (!actionId) return c.json({ error: "actionId required" }, 400);
@@ -433,10 +501,14 @@ app.post("/api/play-remote", async (c) => {
     return c.json({ error: "Not allowed for this PIN." }, 403);
   }
   const delayMinutes = Math.max(0, Math.min(720, Number(body.delayMinutes) || 0));
-  const loop = resolvePlayLoop(
-    actionId,
-    typeof body.loop === "boolean" ? body.loop : undefined,
-  );
+  const audio = resolveEvacAudio(actionId, body);
+  const loop = audio.loop;
+  const replayActive = body.replayActive === true;
+  const evacMode: EvacAudioMode = audio.repeatMinutes
+    ? "repeat"
+    : audio.loop
+      ? "loop"
+      : "once";
 
   if (!(await getSystemArmed(c.env))) {
     return c.json(
@@ -447,7 +519,7 @@ app.post("/api/play-remote", async (c) => {
         "remote",
         [
           delayMinutes > 0 ? `delay ${delayMinutes}m` : null,
-          loop ? "loop" : null,
+          evacAudioAuditDetail(audio),
         ]
           .filter(Boolean)
           .join(" · ") || undefined,
@@ -456,8 +528,16 @@ app.post("/api/play-remote", async (c) => {
   }
 
   if (evacPhaseForAction(actionId)) {
-    const started = await beginEvacCode(c.env, actionId, session.label);
-    if (!started.ok) return c.json({ error: started.error }, 409);
+    if (replayActive) {
+      const phase = await getEvacPhase(c.env);
+      if (evacActionIdForPhase(phase) !== actionId) {
+        return c.json({ error: "No matching active code to replay." }, 409);
+      }
+    } else {
+      const started = await beginEvacCode(c.env, actionId, session.label);
+      if (!started.ok) return c.json({ error: started.error }, 409);
+      await applyEvacAudioSettings(c.env, actionId, audio, evacMode);
+    }
   }
 
   const id = crypto.randomUUID();
@@ -484,7 +564,8 @@ app.post("/api/play-remote", async (c) => {
     detail: [
       delayMinutes > 0 ? `delay ${delayMinutes}m` : null,
       fireAt ? `fire ${fireAt}` : null,
-      loop ? "loop" : null,
+      evacAudioAuditDetail(audio),
+      replayActive ? "replay" : null,
     ]
       .filter(Boolean)
       .join(" · ") || undefined,
@@ -511,12 +592,20 @@ app.post("/api/play-remote", async (c) => {
     mode: "remote",
     armed: true,
     evacPhase: await getEvacPhase(c.env),
+    evacRepeatMinutes: await getEvacRepeatMinutes(c.env),
+    evacAudioMode: await getEvacAudioMode(c.env),
     status: delayMinutes > 0 ? "scheduled" : "queued",
     fireAt,
     message:
       delayMinutes > 0
         ? `Scheduled on campus — not playing yet. Will ring in about ${delayMinutes} min (void anytime before then).`
-        : "Queued on campus — not playing yet. Gateway usually picks this up within a few seconds.",
+        : replayActive
+          ? "Replay queued on campus — code stays active."
+          : audio.repeatMinutes
+            ? `Queued on campus — will replay every ${audio.repeatMinutes} min until all clear.`
+            : loop
+              ? "Queued on campus — horns will loop until stopped or all clear."
+              : "Queued on campus — plays once; code stays active until all clear.",
   });
 });
 
@@ -532,6 +621,9 @@ app.post("/api/admin/play", async (c) => {
     actionId?: string;
     delayMinutes?: number;
     loop?: boolean;
+    evacAudio?: EvacAudioMode;
+    repeatMinutes?: number;
+    replayActive?: boolean;
   };
   const actionId = body.actionId?.trim();
   if (!actionId) return c.json({ error: "actionId required" }, 400);
@@ -539,10 +631,14 @@ app.post("/api/admin/play", async (c) => {
     return c.json({ error: "Not allowed for this PIN." }, 403);
   }
   const delayMinutes = Math.max(0, Math.min(720, Number(body.delayMinutes) || 0));
-  const loop = resolvePlayLoop(
-    actionId,
-    typeof body.loop === "boolean" ? body.loop : undefined,
-  );
+  const audio = resolveEvacAudio(actionId, body);
+  const loop = audio.loop;
+  const replayActive = body.replayActive === true;
+  const evacMode: EvacAudioMode = audio.repeatMinutes
+    ? "repeat"
+    : audio.loop
+      ? "loop"
+      : "once";
 
   if (!(await getSystemArmed(c.env)) && !actionId.startsWith("test.phone:")) {
     return c.json(
@@ -553,7 +649,7 @@ app.post("/api/admin/play", async (c) => {
         "admin",
         [
           delayMinutes > 0 ? `delay ${delayMinutes}m` : null,
-          loop ? "loop" : null,
+          evacAudioAuditDetail(audio),
         ]
           .filter(Boolean)
           .join(" · ") || undefined,
@@ -562,8 +658,16 @@ app.post("/api/admin/play", async (c) => {
   }
 
   if (evacPhaseForAction(actionId)) {
-    const started = await beginEvacCode(c.env, actionId, session.label);
-    if (!started.ok) return c.json({ error: started.error }, 409);
+    if (replayActive) {
+      const phase = await getEvacPhase(c.env);
+      if (evacActionIdForPhase(phase) !== actionId) {
+        return c.json({ error: "No matching active code to replay." }, 409);
+      }
+    } else {
+      const started = await beginEvacCode(c.env, actionId, session.label);
+      if (!started.ok) return c.json({ error: started.error }, 409);
+      await applyEvacAudioSettings(c.env, actionId, audio, evacMode);
+    }
   }
 
   const id = crypto.randomUUID();
@@ -590,7 +694,8 @@ app.post("/api/admin/play", async (c) => {
     detail: [
       delayMinutes > 0 ? `delay ${delayMinutes}m` : null,
       fireAt ? `fire ${fireAt}` : null,
-      loop ? "loop" : null,
+      evacAudioAuditDetail(audio),
+      replayActive ? "replay" : null,
     ]
       .filter(Boolean)
       .join(" · ") || undefined,
@@ -729,6 +834,70 @@ app.post("/api/stop-remote", async (c) => {
     evacPhase: "idle",
     message:
       "All clear queued on campus — not playing yet. Start tone + Code Green ×2 when the gateway picks it up.",
+  });
+});
+
+/** Stop campus horns without ending the active code (Red/Blue stays declared). */
+app.post("/api/stop-horns", async (c) => {
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  if (session.mustChangePin) {
+    return c.json({ error: "Set your permanent PIN before using the alarm." }, 403);
+  }
+  if (!actionAllowed("__stop__", session.scopes)) {
+    return c.json({ error: "Not allowed to stop horns." }, 403);
+  }
+
+  const phase = await getEvacPhase(c.env);
+  if (phase === "idle") {
+    return c.json({ error: "No active code — nothing to stop." }, 409);
+  }
+
+  if (!(await getSystemArmed(c.env))) {
+    return c.json(
+      await holdUnarmedPlay(c.env, session, "__stop__", "remote", "stop horns"),
+    );
+  }
+
+  const id = crypto.randomUUID();
+  await enqueuePlay(c.env, {
+    id,
+    actionId: "__stop__",
+    pinId: session.pinId,
+    label: session.label,
+    delayMinutes: 0,
+    command: "stop",
+  });
+  await insertAudit(c.env, {
+    id,
+    actionId: "__stop__",
+    label: session.label,
+    pinId: session.pinId,
+    mode: hasScope(session.scopes, "remote") ? "remote" : "lan",
+    status: "queued",
+    detail: `stop horns · code ${phase} stays active`,
+  });
+  await publishSystemEvent(c.env, "activity", {
+    id,
+    actionId: "__stop__",
+    status: "queued",
+    at: Date.now(),
+  });
+  const volumes = await getVolumeSettings(c.env);
+  await publishGatewayJob(c.env, {
+    type: "play",
+    id,
+    actionId: "__stop__",
+    delayMinutes: 0,
+    label: session.label,
+    command: "stop",
+    volumes,
+  });
+  return c.json({
+    ok: true,
+    status: "queued",
+    evacPhase: phase,
+    message: "Horns stopping on campus — Code stays active until Stop & All clear.",
   });
 });
 
@@ -1432,6 +1601,7 @@ app.post("/api/gateway/ack", async (c) => {
   if (!body.id || typeof body.ok !== "boolean") {
     return c.json({ error: "id and ok required" }, 400);
   }
+  const job = body.ok ? await getQueueJob(c.env, body.id) : null;
   await finishJob(c.env, body.id, body.ok, body.error);
   await updateAuditStatus(
     c.env,
@@ -1439,6 +1609,29 @@ app.post("/api/gateway/ack", async (c) => {
     body.ok ? "done" : "error",
     body.error,
   );
+  if (body.ok && job) {
+    const cmd = job.command ?? "play";
+    if (cmd === "play") {
+      const repeatMin = await getEvacRepeatMinutes(c.env);
+      if (repeatMin) {
+        const phase = await getEvacPhase(c.env);
+        const expected = evacActionIdForPhase(phase);
+        if (expected && job.action_id === expected) {
+          const id = crypto.randomUUID();
+          const fireAt = new Date(Date.now() + repeatMin * 60_000).toISOString();
+          await enqueuePlay(c.env, {
+            id,
+            actionId: expected,
+            pinId: "system",
+            label: `Auto-repeat (${repeatMin}m)`,
+            delayMinutes: repeatMin,
+            loop: false,
+            fireAt,
+          });
+        }
+      }
+    }
+  }
   return c.json({ ok: true });
 });
 
@@ -1802,6 +1995,7 @@ app.post("/api/admin/evac-reset", async (c) => {
   if (phase === "idle") {
     return c.json({ ok: true, evacPhase: "idle", message: "No active code — already idle." });
   }
+  await clearEvacAudioSchedule(c.env);
   await setEvacPhase(c.env, "idle");
   await publishEvacPhase(c.env, "idle", session.label);
   const id = crypto.randomUUID();

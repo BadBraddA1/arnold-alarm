@@ -32,7 +32,7 @@ apps/web/       Cloudflare Worker (Hono) + static UI + D1
   public/desk/  Desktop admin console (sidebar dashboard)
 apps/gateway/   Pi agent → Protect Alarm Manager
 scripts/        Pi bootstrap
-docs/           Plans (e.g. building-time bells)
+docs/           SOP, fobs, bells plans, backlog
 ```
 
 ## Desktop vs mobile
@@ -152,6 +152,10 @@ Sequence example (second bell):
 - **Volume profiles:** Admin can set **class bell volume per speaker** (plus a default for new horns). Emergency / all clear / speaker check / PA use the emergency level (default **100%**). Speakers restore to emergency level after each bell.
 - **Speaker check desk notify:** before TEST ACOC, the gateway dials `TEST_NOTIFY_EXTS` (`0011` Left desk, `0015` Right desk, `0023` Adin's phone — **not** Elders office `0014`) via UniFi Talk from **9090 Campus Security**, plays a stand-by prompt, listens for **0** to delay horns, says **goodbye**, then plays horns unless delayed. The desk **Speaker test** board shows live per-phone status.
 - **Audition desk prompt only:** set `SPEAKER_CHECK_NOTIFY_ONLY=1` on the Pi — speaker check rings desk phones but skips campus horns.
+
+## Emergency SOP
+
+Staff roles, Code Red vs. Blue response, and who may call all clear: **https://emergency.arnoldcoc.org** (source repo: [arnold-emergency](https://github.com/BadBraddA1/arnold-emergency)). Draft — leadership sign-off required.
 
 ## Ops / safety notes
 

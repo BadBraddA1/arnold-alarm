@@ -1,4 +1,5 @@
 const TZ = "America/Chicago";
+const PLAYBOOK_URL = "https://emergency.arnoldcoc.org";
 const $ = (sel, el = document) => el.querySelector(sel);
 const app = $("#app");
 
@@ -547,6 +548,10 @@ async function pollSystemArmed() {
   }
 }
 
+function playbookLinkHtml() {
+  return `<p class="playbook-link"><a href="${PLAYBOOK_URL}" target="_blank" rel="noopener noreferrer">Emergency playbook</a> — who does what when a code sounds (not bells)</p>`;
+}
+
 function header(label) {
   const [dot, text] = statusCopy();
   return `
@@ -580,6 +585,7 @@ function renderPin() {
         </div>
         <div id="pin-msg">${banner()}</div>
         <p class="muted install-hint">Tip: on iPhone, Share → Add to Home Screen for one-tap access.</p>
+        ${playbookLinkHtml()}
       </div>
     </main>`;
   wirePin();
@@ -713,6 +719,7 @@ function renderHome() {
           ${canBells ? `<button type="button" class="tile" data-go="bells"><h2>Class bells</h2><p>First and second bell — play now or schedule to building time.</p></button>` : ""}
           ${canAdmin ? `<a class="tile" href="/desk/" style="text-decoration:none"><h2>Desktop console</h2><p>Speakers, activity, staff PINs, and system controls — use on a computer.</p></a>` : ""}
         </div>
+        ${playbookLinkHtml()}
         <div class="stack" style="gap:0.5rem">
           <p style="margin:0;font-weight:600">Recent activity</p>
           <p class="muted" style="margin:0;font-size:0.85rem">Who activated what, and when (Central).</p>
@@ -913,7 +920,30 @@ function heldBanner(message) {
   return `<div class="success-banner">${escapeHtml(message || "System is unarmed — command recorded, speakers will not play.")}</div>`;
 }
 
-async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
+function normalizePlayOptions(options) {
+  if (typeof options === "boolean") {
+    return { evacAudio: options ? "loop" : "once" };
+  }
+  return options && typeof options === "object" ? options : {};
+}
+
+function applyEvacAudioFromResponse(data) {
+  if (!state.config || !data) return;
+  if (data.evacRepeatMinutes != null) {
+    state.config.evacRepeatMinutes = data.evacRepeatMinutes;
+  }
+  if (data.evacAudioMode) {
+    state.config.evacAudioMode = data.evacAudioMode;
+  }
+}
+
+async function playAction(actionId, msgEl, delayMinutes = 0, options = {}) {
+  const opts = normalizePlayOptions(options);
+  const { evacAudio, repeatMinutes, replayActive } = opts;
+  const payload = { actionId, delayMinutes, evacAudio, repeatMinutes, replayActive };
+  if (evacAudio === "loop") payload.loop = true;
+  else if (evacAudio === "once") payload.loop = false;
+
   msgEl.innerHTML = `<div class="muted">Sending…</div>`;
   if (actionId === "evacuate.code_green") {
     msgEl.innerHTML = `<div class="error-banner">All clear is only available via <strong>Stop &amp; All clear</strong>.</div>`;
@@ -924,7 +954,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
   if (canRemote) {
     const { res, data } = await api("/api/play-remote", {
       method: "POST",
-      body: JSON.stringify({ actionId, delayMinutes, loop }),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) {
       msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Remote play failed.")}</div>`;
@@ -935,7 +965,12 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
       return;
     }
     if (data.evacPhase) applyEvacPhase(data.evacPhase);
-    await logAudit(actionId, "remote", delayMinutes > 0 ? "scheduled" : "queued", loop ? "loop" : undefined);
+    applyEvacAudioFromResponse(data);
+    const detail = [
+      replayActive ? "replay" : null,
+      evacAudio === "repeat" ? `repeat ${repeatMinutes || 2}m` : evacAudio === "once" ? "once" : evacAudio === "loop" ? "loop" : null,
+    ].filter(Boolean).join(" · ") || undefined;
+    await logAudit(actionId, "remote", delayMinutes > 0 ? "scheduled" : "queued", detail);
     msgEl.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "Queued on campus — not playing yet.")}</div>`;
     return;
   }
@@ -978,7 +1013,7 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
 
   const { res, data } = await api("/api/play-token", {
     method: "POST",
-    body: JSON.stringify({ actionId }),
+    body: JSON.stringify({ actionId, evacAudio, repeatMinutes, replayActive }),
   });
   if (!res.ok) {
     msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not authorize play.")}</div>`;
@@ -989,10 +1024,15 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
     return;
   }
   if (data.evacPhase) applyEvacPhase(data.evacPhase);
+  applyEvacAudioFromResponse(data);
   if (!data.token || !data.gatewayUrl) {
     msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not authorize play.")}</div>`;
     return;
   }
+  const loop =
+    typeof data.loop === "boolean"
+      ? data.loop
+      : evacAudio === "loop" || (evacAudio == null && opts.loop !== false);
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(
@@ -1021,7 +1061,10 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
       msgEl.innerHTML = `<div class="error-banner">${escapeHtml(playData.error || `Gateway error (${playRes.status})`)}</div>`;
       return;
     }
-    await logAudit(actionId, "lan", "done", loop ? "loop" : undefined);
+    await logAudit(actionId, "lan", "done", [
+      replayActive ? "replay" : null,
+      loop ? "loop" : evacAudio === "repeat" ? `repeat ${repeatMinutes || 2}m` : "once",
+    ].filter(Boolean).join(" · ") || undefined);
     const playingMsg =
       actionId === "test.speakers" || actionId === "bells.test"
         ? "Notifying desk phones, then start tone + TEST ACOC on all speakers."
@@ -1031,13 +1074,78 @@ async function playAction(actionId, msgEl, delayMinutes = 0, loop = false) {
           ? "Playing now — start bell tone twice (all speakers)."
           : actionId === "bells.first"
             ? "Playing now — start bell tone on all speakers."
-            : loop
-              ? "Playing now on campus speakers (looping until all clear)."
-              : "Playing now on campus speakers.";
+            : evacAudio === "repeat"
+              ? `Playing now — will replay every ${repeatMinutes || 2} min until all clear.`
+              : loop
+                ? "Playing now on campus speakers (looping until stopped or all clear)."
+                : replayActive
+                  ? "Replaying now on campus speakers — code stays active."
+                  : "Playing now on campus speakers — code stays active until all clear.";
     msgEl.innerHTML = `<div class="success-banner">${playingMsg}</div>`;
   } catch {
     msgEl.innerHTML = `<div class="error-banner">Pi offline — join church Wi‑Fi and try again, or ask an admin for remote play access.</div>`;
   }
+}
+
+async function stopHorns(msgEl) {
+  if (msgEl) msgEl.innerHTML = `<div class="muted">Stopping horns…</div>`;
+  if (!canRemotePlay() && state.config?.gatewayUrl) {
+    try {
+      const { res, data } = await api("/api/play-token", {
+        method: "POST",
+        body: JSON.stringify({ actionId: "__stop__" }),
+      });
+      if (res.ok && data.token && data.gatewayUrl) {
+        const stopRes = await fetch(`${data.gatewayUrl}/stop`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: data.token }),
+        });
+        const stopData = await stopRes.json().catch(() => ({}));
+        if (stopRes.ok) {
+          await logAudit("__stop__", "lan", "done", "stop horns");
+          if (msgEl) {
+            msgEl.innerHTML = `<div class="success-banner">Horns stopped — code stays active until Stop &amp; All clear.</div>`;
+          }
+          return;
+        }
+        if (msgEl && stopData.error) {
+          msgEl.innerHTML = `<div class="error-banner">${escapeHtml(stopData.error)}</div>`;
+          return;
+        }
+      }
+    } catch {
+      /* fall through to cloud queue */
+    }
+  }
+  const { res, data } = await api("/api/stop-horns", { method: "POST", body: "{}" });
+  if (!res.ok) {
+    if (msgEl) msgEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Could not stop horns.")}</div>`;
+    return;
+  }
+  if (data.held || data.armed === false) {
+    if (msgEl) msgEl.innerHTML = heldBanner(data.message);
+    return;
+  }
+  await logAudit("__stop__", canRemotePlay() ? "remote" : "lan", "queued", "stop horns");
+  if (msgEl) {
+    msgEl.innerHTML = `<div class="success-banner">${escapeHtml(data.message || "Horns stopping on campus — code stays active.")}</div>`;
+  }
+}
+
+async function replayEvacHorns(msgEl) {
+  const phase = evacPhase();
+  const actionId =
+    phase === "red"
+      ? "evacuate.code_red"
+      : phase === "blue"
+        ? "evacuate.code_blue"
+        : null;
+  if (!actionId) {
+    if (msgEl) msgEl.innerHTML = `<div class="error-banner">No active code to replay.</div>`;
+    return;
+  }
+  await playAction(actionId, msgEl, 0, { evacAudio: "once", replayActive: true });
 }
 
 async function stopAndAllClear(msgEl) {
@@ -1686,6 +1794,12 @@ function startEvacArmCountdown({ actionId, label, tone, onFire }) {
   }, 1000);
 }
 
+function selectedEvacAudio() {
+  if ($("#evac-audio-repeat")?.checked) return { evacAudio: "repeat", repeatMinutes: 2 };
+  if ($("#evac-audio-once")?.checked) return { evacAudio: "once" };
+  return { evacAudio: "loop" };
+}
+
 function renderEvacuate() {
   const actions = (state.config?.evacuateActions || [
     { id: "evacuate.code_red", label: "Code Red — Evacuate" },
@@ -1698,12 +1812,21 @@ function renderEvacuate() {
   const phase = evacPhase();
   const codesOpen = phase === "idle";
   const clearOpen = phase === "red" || phase === "blue";
+  const audioMode = state.config?.evacAudioMode || "loop";
+  const repeatMin = state.config?.evacRepeatMinutes || 2;
   const phaseHint =
     phase === "red"
-      ? "Campus is in a Code Red event. Red/Blue are locked — tap Stop & All clear below (plays Code Green on horns). There is no separate Code Green button."
+      ? "Campus is in a Code Red event. Red/Blue are locked — use Stop horns or Stop & All clear below."
       : phase === "blue"
-        ? "Campus is in a Code Blue event. Red/Blue are locked — tap Stop & All clear below (plays Code Green on horns). There is no separate Code Green button."
+        ? "Campus is in a Code Blue event. Red/Blue are locked — use Stop horns or Stop & All clear below."
         : "10s phone alarm before campus speakers.";
+  const activeAudioNote = clearOpen
+    ? audioMode === "repeat"
+      ? `Horns replay every ${repeatMin} minutes until all clear.`
+      : audioMode === "once"
+        ? "Horns play once — code stays active until all clear."
+        : "Horns loop until you stop them or all clear."
+    : "";
 
   app.innerHTML = `
     <main class="app-shell evac-shell">
@@ -1712,9 +1835,27 @@ function renderEvacuate() {
       <div class="evac-idle">
         <h1 class="page-title evac-title">Emergency</h1>
         <p class="evac-meta">${escapeHtml(phaseHint)}</p>
-        <label class="checks evac-loop">
-          <input type="checkbox" id="evac-loop" checked /> Loop until all clear
-        </label>
+        ${clearOpen ? `<p class="evac-meta evac-active-note">${escapeHtml(activeAudioNote)}</p>` : ""}
+        ${codesOpen ? `
+        <div class="evac-audio-options checks" role="radiogroup" aria-label="Campus horn behavior">
+          <label class="evac-audio-opt">
+            <input type="radio" name="evac-audio" id="evac-audio-loop" value="loop" ${audioMode === "loop" || audioMode == null ? "checked" : ""} />
+            Loop until all clear
+          </label>
+          <label class="evac-audio-opt">
+            <input type="radio" name="evac-audio" id="evac-audio-repeat" value="repeat" ${audioMode === "repeat" ? "checked" : ""} />
+            Repeat every 2 minutes
+          </label>
+          <label class="evac-audio-opt">
+            <input type="radio" name="evac-audio" id="evac-audio-once" value="once" ${audioMode === "once" ? "checked" : ""} />
+            Play once (code stays active)
+          </label>
+        </div>` : ""}
+        ${clearOpen ? `
+        <div class="evac-active-tools">
+          <button type="button" class="btn btn-ghost btn-block" id="evac-stop-horns">Stop horns (keep code active)</button>
+          <button type="button" class="btn btn-ghost btn-block" id="evac-replay">Replay horns now</button>
+        </div>` : ""}
       </div>
       <div id="evac-confirm" class="evac-stage"></div>
       <div id="play-msg"></div>
@@ -1753,11 +1894,17 @@ function renderEvacuate() {
         label,
         tone,
         onFire: () => {
-          const loop = $("#evac-loop")?.checked;
-          void playAction(id, $("#play-msg"), 0, loop);
+          void playAction(id, $("#play-msg"), 0, selectedEvacAudio());
         },
       });
     });
+  });
+
+  $("#evac-stop-horns")?.addEventListener("click", () => {
+    void stopHorns($("#play-msg"));
+  });
+  $("#evac-replay")?.addEventListener("click", () => {
+    void replayEvacHorns($("#play-msg"));
   });
 
   $("#evac-all-clear")?.addEventListener("click", () => {
@@ -2123,8 +2270,9 @@ document.addEventListener("click", (e) => {
     void forceLogout(null);
   }
   if (t.dataset.play) {
-    const loop = state.route === "evacuate" && $("#evac-loop")?.checked;
-    void playAction(t.dataset.play, $("#play-msg"), 0, loop);
+    const audio =
+      state.route === "evacuate" ? selectedEvacAudio() : { evacAudio: "loop" };
+    void playAction(t.dataset.play, $("#play-msg"), 0, audio);
   }
   if (t.dataset.schedule) {
     void scheduleAction(

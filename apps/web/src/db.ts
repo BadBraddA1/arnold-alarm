@@ -697,6 +697,92 @@ export async function setEvacPhase(env: Env, phase: EvacPhase) {
     .run();
 }
 
+export function evacActionIdForPhase(phase: EvacPhase): string | null {
+  if (phase === "red") return "evacuate.code_red";
+  if (phase === "blue") return "evacuate.code_blue";
+  return null;
+}
+
+export async function getEvacRepeatMinutes(env: Env): Promise<number | null> {
+  const row = await env.DB.prepare(
+    `SELECT value FROM system_settings WHERE key = 'evac_repeat_minutes'`,
+  ).first<{ value: string }>();
+  if (!row?.value) return null;
+  const n = Number(row.value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.round(n);
+}
+
+export async function setEvacRepeatMinutes(env: Env, minutes: number | null) {
+  if (minutes == null || minutes <= 0) {
+    await env.DB.prepare(
+      `DELETE FROM system_settings WHERE key = 'evac_repeat_minutes'`,
+    ).run();
+    return;
+  }
+  const m = Math.max(1, Math.min(60, Math.round(minutes)));
+  await env.DB.prepare(
+    `INSERT INTO system_settings (key, value) VALUES ('evac_repeat_minutes', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  )
+    .bind(String(m))
+    .run();
+}
+
+export async function cancelEvacRepeatQueue(env: Env) {
+  await env.DB.prepare(
+    `UPDATE play_queue
+     SET status = 'cancelled', finished_at = datetime('now')
+     WHERE status IN ('scheduled', 'pending')
+       AND action_id IN ('evacuate.code_red', 'evacuate.code_blue')`,
+  ).run();
+}
+
+export async function clearEvacAudioSchedule(env: Env) {
+  await setEvacRepeatMinutes(env, null);
+  await env.DB.prepare(
+    `DELETE FROM system_settings WHERE key = 'evac_audio_mode'`,
+  ).run();
+  await cancelEvacRepeatQueue(env);
+}
+
+export async function setEvacAudioMode(
+  env: Env,
+  mode: "loop" | "once" | "repeat" | null,
+) {
+  if (!mode) {
+    await env.DB.prepare(
+      `DELETE FROM system_settings WHERE key = 'evac_audio_mode'`,
+    ).run();
+    return;
+  }
+  await env.DB.prepare(
+    `INSERT INTO system_settings (key, value) VALUES ('evac_audio_mode', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  )
+    .bind(mode)
+    .run();
+}
+
+export async function getEvacAudioMode(
+  env: Env,
+): Promise<"loop" | "once" | "repeat" | null> {
+  const row = await env.DB.prepare(
+    `SELECT value FROM system_settings WHERE key = 'evac_audio_mode'`,
+  ).first<{ value: string }>();
+  const v = row?.value;
+  if (v === "loop" || v === "once" || v === "repeat") return v;
+  return null;
+}
+
+export async function getQueueJob(env: Env, id: string): Promise<QueueJob | null> {
+  const row = await env.DB.prepare(
+    `SELECT id, action_id, pin_id, label, delay_minutes, status, created_at, loop_play, command, fire_at
+     FROM play_queue WHERE id = ?`,
+  ).first<QueueJob>();
+  return row ?? null;
+}
+
 export type VolumeSettings = {
   bells: number;
   evac: number;

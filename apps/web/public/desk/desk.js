@@ -1136,6 +1136,7 @@ function topbarHtml() {
         <p class="meta">${escapeHtml(subtitles[state.section] || "")}</p>
       </div>
       <div class="row">
+        <a class="desk-playbook-link" href="https://emergency.arnoldcoc.org" target="_blank" rel="noopener noreferrer">Emergency playbook ↗</a>
         <span class="muted" style="font-size:0.82rem">Sessions & fob leases — 3 hours</span>
       </div>
     </header>`;
