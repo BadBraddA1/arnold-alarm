@@ -22,6 +22,8 @@ export type Env = {
   SESSION_SECRET: string;
   PLAY_JWT_SECRET: string;
   GATEWAY_POLL_SECRET: string;
+  /** Shared with emergency.arnoldcoc.org Pages Functions — PIN verify only (not gateway). */
+  EMERGENCY_VERIFY_SECRET?: string;
   GATEWAY_URL: string;
   BELL_ACTIONS: string;
   EVACUATE_ACTIONS: string;

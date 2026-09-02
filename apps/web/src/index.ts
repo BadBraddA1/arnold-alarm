@@ -339,6 +339,48 @@ app.post("/api/auth/pin", async (c) => {
   });
 });
 
+/** Server-to-server PIN check for emergency.arnoldcoc.org — no cookie, no Alarm session. */
+app.post("/api/auth/verify", async (c) => {
+  const secret = c.env.EMERGENCY_VERIFY_SECRET;
+  const auth = c.req.header("authorization") || "";
+  if (!secret || auth !== `Bearer ${secret}`) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const body = (await c.req.json().catch(() => ({}))) as { pin?: string };
+  const pin = (body.pin ?? "").replace(/\D/g, "");
+  if (!/^\d{6}$/.test(pin)) {
+    return c.json({ error: "Enter a 6-digit PIN." }, 400);
+  }
+
+  const rateIp =
+    c.req.header("x-emergency-client-ip")?.trim() || clientIp(c);
+  const limit = await checkRateLimit(c.env, `emergency:${rateIp}`);
+  if (!limit.allowed) {
+    return c.json({ error: "Too many attempts. Try again in 15 minutes." }, 429);
+  }
+
+  const pins = await listActivePins(c.env);
+  let matched: (typeof pins)[0] | null = null;
+  for (const row of pins) {
+    if (await bcrypt.compare(pin, row.pin_hash)) {
+      matched = row;
+      break;
+    }
+  }
+  if (!matched) return c.json({ error: "Incorrect PIN." }, 401);
+
+  await clearRateLimit(c.env, `emergency:${rateIp}`);
+  const scopes = parseScopesField(matched.scopes);
+  return c.json({
+    ok: true,
+    pinId: matched.id,
+    label: matched.label,
+    scopes,
+    mustChangePin: !!matched.must_change_pin,
+  });
+});
+
 app.post("/api/auth/logout", (c) => {
   deleteCookie(c, SESSION_COOKIE, { path: "/" });
   return c.json({ ok: true });
