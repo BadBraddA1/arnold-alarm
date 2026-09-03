@@ -42,7 +42,17 @@ button, input { font: inherit; }
   flex-direction: column;
   max-width: 42rem;
   margin: 0 auto;
-  padding: 1.25rem 1.25rem 2rem;
+  /* Home-screen / standalone: clear notch + status bar (black-translucent) */
+  padding:
+    calc(1.25rem + constant(safe-area-inset-top))
+    calc(1.25rem + constant(safe-area-inset-right))
+    calc(2rem + constant(safe-area-inset-bottom))
+    calc(1.25rem + constant(safe-area-inset-left));
+  padding:
+    calc(1.25rem + env(safe-area-inset-top, 0px))
+    calc(1.25rem + env(safe-area-inset-right, 0px))
+    calc(2rem + env(safe-area-inset-bottom, 0px))
+    calc(1.25rem + env(safe-area-inset-left, 0px));
 }
 
 .app-header {
@@ -461,7 +471,10 @@ button, input { font: inherit; }
   display: flex;
   flex-direction: column;
   min-height: 100dvh;
-  padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
+  padding-top: calc(0.5rem + env(safe-area-inset-top, 0px));
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+  padding-left: env(safe-area-inset-left, 0px);
   overflow: hidden;
 }
 .evac-idle {
@@ -522,8 +535,8 @@ button, input { font: inherit; }
   display: none;
 }
 .evac-shell.is-arming {
-  padding-top: 0.75rem;
-  padding-bottom: 0.5rem;
+  padding-top: calc(0.75rem + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
 }
 .evac-shell.is-arming .app-header {
   margin-bottom: 0.65rem;
